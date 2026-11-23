@@ -1,10 +1,10 @@
 # Marathon Trainer
 
-An iPhone home-screen app for Boston 2027 training. Your **plan lives in a Google Sheet** that stays in sync both ways. Runs and cross-training come from **Strava**, where your Apple Watch workouts already sync. The app shows plan-vs-actual charts and coaching tips.
+An iPhone home-screen app for Boston 2027 training. **The app holds your plan and workouts**, and you can edit all of it there. Your spreadsheet supplies the starting data, and **Strava** (where your Apple Watch workouts sync) adds new runs and cross-training automatically. The app shows plan-vs-actual charts and coaching tips.
 
 **App:** https://dschiemer313.github.io/marathon-app/
 
-No personal data is stored in this repo. Your sheet link, Strava keys, and runs are stored only on your phone.
+No personal data is stored in this repo. Your plan, workouts, sheet link, and Strava keys are stored only on your phone.
 
 ---
 
@@ -12,32 +12,34 @@ No personal data is stored in this repo. Your sheet link, Strava keys, and runs 
 
 | Data | Source |
 |---|---|
-| Weekly plan, goal time, paces | Google Sheet "Marathon 2027" (Training tab), live |
-| Runs up to the last date in the sheet's run log | Google Sheet run log |
-| Runs after that date | Strava: Run, Trail Run, Virtual Run |
-| Cross-training after that date | Strava: Workout (F45 / functional strength), Weight Training, HIIT, CrossFit |
-| Ignored | Walks, hikes, rides, everything else |
+| Starting plan, goal time, paces, run history | Imported once from the Google Sheet "Marathon 2027" (or an .xlsx file) |
+| New runs after the imported history | Strava: Run, Trail Run, Virtual Run |
+| New cross-training | Strava: Workout (F45 / functional strength), Weight Training, HIIT, CrossFit |
+| Anything else | **+ Log workout** in the app (Strava-style: type, title, distance, time, pace, heart rate, effort, notes) |
+| Ignored | Walks, hikes, rides |
 
-- **Edit the plan anywhere.** In the app, go to Plan → tap a week → **Edit week**, or Settings → **Change goal & paces**. Changes save straight to the Google Sheet. Edits made in Google Sheets show up in the app the next time you open it or tap ⟳.
-- The app only writes plan inputs: phase, run descriptions, miles, long-run notes, cross-train target, goal time, and pace offsets. It never overwrites cells with formulas, so Plan Mi, paces, and everything else keep recalculating in the sheet.
+- **Edit anything in the app:**
+  - A week of the plan: Plan → tap a week → **Edit week**, or Today → This week → **Edit**
+  - Goal and paces: Settings → **Change goal & paces**
+  - Any workout you logged or imported: tap it on the Runs tab to edit or delete it
 - If you change a run's miles and its description says "Easy 2 mi", the description updates to match.
+- **Re-importing** from the sheet (Settings → Starting data) replaces the plan and the imported history. Workouts you logged in the app are kept.
+- **Back up** with Settings → Your data → **Back up to a file**. You can restore from that file. Removing the app from your home screen erases its data.
 
 ## Setting up on your iPhone
 
 1. Open the app link above in **Safari**. Tap **Share → Add to Home Screen → Add**.
-2. Open **Marathon** from your home screen and go to **Settings → Google Sheet**. Paste your sheet link (the web app URL, then `#`, then your key) and tap **Link Google Sheet**.
+2. Open **Marathon** from your home screen, go to **Settings → Starting data**, paste your Google Sheet link (the web app URL, then `#`, then your key), and tap **Import from Google Sheet**.
    Your personal link isn't stored in this repo. Keep it somewhere private, like Notes.
-3. **Settings → Strava.** Paste your Client ID and Client Secret, then tap **Connect with Strava**. See the Strava setup below.
+3. **Settings → Strava.** Enter Client ID `300161` and your Client Secret (strava.com/settings/api → Client Secret → Show), then tap **Connect with Strava** → **Authorize**.
 
 **If Strava sends you back to Safari instead of the app:** the page shows a code with a **Copy code** button. Open the Marathon app, go to **Settings → Strava → "Connected in Safari but the app didn't pick it up?"**, paste the code, and tap **Use code** within a few minutes.
 
-## Strava API app (one time)
+## Strava API app (already created)
 
-At **strava.com/settings/api** create an app:
-- **Website:** `https://dschiemer313.github.io/marathon-app/`
-- **Authorization Callback Domain:** `dschiemer313.github.io`
+"Marathon Trainer" at **strava.com/settings/api**: Client ID `300161`, Website `https://dschiemer313.github.io/marathon-app/`, Authorization Callback Domain `dschiemer313.github.io`. Since June 2026, Strava's API requires an active Strava subscription.
 
-## The Google Sheet link (already set up)
+## The Google Sheet link (used for importing)
 
 - **Sheet:** "Marathon 2027" in your Google Drive (dschiemer313@gmail.com)
 - **Script:** Apps Script project "Marathon Trainer link" at script.google.com, deployed as a web app (Execute as: Me, Access: Anyone). It only answers requests that include your private key. Source: [`google-apps-script.js`](google-apps-script.js).

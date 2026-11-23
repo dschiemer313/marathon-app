@@ -10,6 +10,9 @@ const S = {
   strava: load('mt.strava', {}),
   acts: load('mt.acts', []),
   lastSync: load('mt.lastSync'),
+  // Every workout lives here: history imported from the spreadsheet (source 'import') and
+  // ones logged in the app (source 'app'). All of them can be edited or deleted.
+  workouts: load('mt.workouts', null),
   tab: 'today',
   runFilter: 'all',
   charts: [],
@@ -134,90 +137,179 @@ function parseRows(rows, fileName) {
   return { race, weeks, log, bench, fileName, importedAt: new Date().toISOString() };
 }
 
+/* ---------- starting data: import from a spreadsheet, then the app owns it ---------- */
+// Turn the spreadsheet's run log into editable workouts.
+function historyWorkouts(plan) {
+  const out = [];
+  plan.log.forEach((l, i) => {
+    if (l.miles > 0) out.push({ id: `imp-r${i}-${l.date}`, source: 'import', date: l.date, start: '', type: 'Run', title: '', miles: l.miles, sec: l.sec, hr: null, effort: null, notes: '' });
+    if (l.xt) out.push({ id: `imp-x${i}-${l.date}`, source: 'import', date: l.date, start: '', type: 'F45', title: '', miles: 0, sec: 0, hr: null, effort: null, notes: '' });
+  });
+  return out;
+}
+function adoptPlan(plan, from) {
+  const hadPlan = !!S.plan;
+  if (hadPlan && !confirm(`Replace your plan and goal with the one from ${from}? Plan edits you made in the app will be replaced. Workouts you logged in the app are kept.`)) return false;
+  plan.source = from;
+  S.plan = plan; save('mt.plan', plan);
+  const mine = (S.workouts || []).filter(w => w.source !== 'import');
+  const hist = historyWorkouts(plan);
+  // Imported history wins up to its last date; keep app-logged workouts that aren't duplicates of it.
+  const dup = w => hist.some(h => h.date === w.date && h.type === w.type && Math.abs((h.miles || 0) - (w.miles || 0)) < 0.05);
+  setWorkouts([...hist, ...mine.filter(w => !dup(w))]);
+  return true;
+}
+function setWorkouts(list) {
+  S.workouts = list.sort((a, b) => ((a.date + (a.start || '')) < (b.date + (b.start || '')) ? 1 : -1));
+  save('mt.workouts', S.workouts);
+}
+// Older installs stored history only inside the plan: convert once.
+if (S.plan && !S.workouts) setWorkouts(historyWorkouts(S.plan));
+if (!S.workouts) S.workouts = [];
+
 async function importFile(file) {
-  if (gsLinked() && !confirm('Your plan is linked to a Google Sheet. Importing this file will unlink it. Continue?')) return;
-  if (!gsLinked() && S.plan?.edited && !confirm('Importing will replace the edits you made in the app. Continue?')) return;
   try {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: 'array' });
-    S.plan = parseWorkbook(wb, file.name);
-    save('mt.plan', S.plan);
-    S.gsheet = null; localStorage.removeItem('mt.gsheet');
-    toast(`Imported ${S.plan.weeks.length} weeks from ${file.name}`);
+    const plan = parseWorkbook(wb, file.name);
+    if (!adoptPlan(plan, file.name)) return;
+    toast(`Imported ${plan.weeks.length} weeks and ${plan.log.length} logged days`);
     render();
   } catch (e) {
     console.error(e); toast('Import failed: ' + e.message, 5000);
   }
 }
-/* ---------- Google Sheet link (Apps Script web app) ---------- */
-S.gsheet = load('mt.gsheet', null); // { url, key, name, at }
-const gsLinked = () => !!(S.gsheet && S.gsheet.url && S.gsheet.key);
+
+/* Google Sheet import (one-time pull through the Apps Script web app) */
+S.gsheet = load('mt.gsheet', null); // remembers the link so re-importing is one tap
 function parseGsLink(s) {
   const m = String(s || '').trim().match(/^(https:\/\/script\.google(?:usercontent)?\.com\/[^#\s]+)#(.+)$/);
   return m ? { url: m[1], key: decodeURIComponent(m[2]) } : null;
 }
-function applySheet(j, link) {
-  if (!j.ok) throw new Error(j.error || 'Google Sheet error');
-  const plan = parseRows(j.rows, j.name || 'Google Sheet');
-  plan.source = 'gsheet';
-  S.plan = plan; save('mt.plan', plan);
-  S.gsheet = { ...link, name: j.name, at: Date.now() }; save('mt.gsheet', S.gsheet);
-}
-async function gsRequest(link, body) {
-  const opt = body ? { method: 'POST', body: JSON.stringify({ key: link.key, ...body }) } : undefined; // text/plain: no CORS preflight
-  const url = body ? link.url : `${link.url}?key=${encodeURIComponent(link.key)}&t=${Date.now()}`;
-  const r = await fetch(url, opt);
-  if (!r.ok) throw new Error('Google Sheet link error ' + r.status);
-  let j; try { j = await r.json(); } catch { throw new Error('Google Sheet link did not return data. Was it deployed with access "Anyone"?'); }
-  applySheet(j, link);
-}
-async function loadSheet(manual) {
-  if (!gsLinked()) return;
-  try { await gsRequest(S.gsheet); if (manual) toast('Plan refreshed from Google Sheet'); render(); }
-  catch (e) { console.error(e); toast((manual ? '' : 'Offline? Using saved plan. ') + e.message, 4500); }
-}
-async function linkSheet(text) {
-  const link = parseGsLink(text);
+async function importSheet(text) {
+  const link = typeof text === 'string' ? parseGsLink(text) : text;
   if (!link) return toast('Paste the full link: the web app URL, then # and your key', 5000);
-  try { await gsRequest(link); toast(`Linked to “${S.gsheet.name}”`); render(); }
-  catch (e) { toast(e.message, 6000); }
+  try {
+    const r = await fetch(`${link.url}?key=${encodeURIComponent(link.key)}&t=${Date.now()}`);
+    if (!r.ok) throw new Error('Google Sheet link error ' + r.status);
+    let j; try { j = await r.json(); } catch { throw new Error('The Google Sheet link did not return data'); }
+    if (!j.ok) throw new Error(j.error || 'Google Sheet error');
+    const plan = parseRows(j.rows, j.name || 'Google Sheet');
+    if (!adoptPlan(plan, `Google Sheet “${j.name}”`)) return;
+    S.gsheet = { ...link, name: j.name }; save('mt.gsheet', S.gsheet);
+    toast(`Imported ${plan.weeks.length} weeks from “${j.name}”`); render();
+  } catch (e) { console.error(e); toast(e.message, 6000); }
 }
 
-/* ---------- editing the plan ---------- */
+/* ---------- editing (everything saves on this device) ---------- */
 const withMiles = (text, oldMi, newMi) => (text && oldMi !== newMi ? text.replace(new RegExp(`\\b${String(oldMi).replace('.', '\\.')}(\\s*mi\\b)`), `${newMi}$1`) : text);
 async function saveWeek(i, f) {
   const w = S.plan.weeks[i];
-  if (gsLinked()) await gsRequest(S.gsheet, { action: 'updateWeek', wk: w.wk, fields: f });
-  else { Object.assign(w, f); w.planMi = +(f.run1Mi + f.run2Mi + f.longMi).toFixed(2); S.plan.edited = true; save('mt.plan', S.plan); }
+  Object.assign(w, f); w.planMi = +(f.run1Mi + f.run2Mi + f.longMi).toFixed(2);
+  save('mt.plan', S.plan);
 }
 async function saveGoals(goalSec, easyOff, quickOff) {
-  if (gsLinked()) {
-    await gsRequest(S.gsheet, { action: 'updateSettings', values: { 'Goal finish time': goalSec / 86400, 'Easy pace offset': easyOff / 86400, 'Quicker-run offset': quickOff / 86400 } });
-  } else {
-    const r = S.plan.race, gp = goalSec / r.distance;
-    Object.assign(r, { goalSec, easyOff, quickOff, goalPace: gp, easyPace: gp + easyOff, quickPace: gp - quickOff });
-    S.plan.edited = true; save('mt.plan', S.plan);
-  }
+  const r = S.plan.race, gp = goalSec / r.distance;
+  Object.assign(r, { goalSec, easyOff, quickOff, goalPace: gp, easyPace: gp + easyOff, quickPace: gp - quickOff });
+  save('mt.plan', S.plan);
 }
-const parseClock = s => { const p = String(s).trim().split(':').map(Number); if (p.some(isNaN) || !p.length) return NaN; return p.reduce((t, x) => t * 60 + x, 0); };
+const parseClock = s => { const t = String(s).trim(); if (!t) return NaN; const p = t.split(':').map(Number); if (p.some(isNaN) || p.length > 3) return NaN; return p.reduce((a, x) => a * 60 + x, 0); };
 
-function openSheet(html, onSubmit) {
+function openSheet(html, onSubmit, savedMsg = 'Saved') {
   closeSheet();
-  document.body.insertAdjacentHTML('beforeend', `<div class="sheet-bg" id="sheet"><form class="sheet" id="sheet-form" autocomplete="off">${html}</form></div>`);
+  document.body.insertAdjacentHTML('beforeend', `<div class="sheet-bg" id="sheet"><form class="sheet" id="sheet-form" autocomplete="off" novalidate>${html}</form></div>`);
   document.body.style.overflow = 'hidden';
   const bg = document.getElementById('sheet'), form = document.getElementById('sheet-form');
   bg.addEventListener('click', e => { if (e.target === bg || e.target.closest('[data-close]')) closeSheet(); });
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
-    try { await onSubmit(new FormData(form)); closeSheet(); render(); toast(gsLinked() ? 'Saved to Google Sheet' : 'Saved'); }
-    catch (err) { console.error(err); toast(err.message, 5000); btn.disabled = false; btn.textContent = 'Save'; }
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true;
+    try { const msg = await onSubmit(new FormData(form)); closeSheet(); render(); toast(msg || savedMsg); }
+    catch (err) { console.error(err); toast(err.message, 5000); btn.disabled = false; }
   });
   return form;
 }
 function closeSheet() { document.getElementById('sheet')?.remove(); document.body.style.overflow = ''; }
-const sheetHead = title => `<div class="sheet-h"><button type="button" class="link" data-close>Cancel</button><b>${title}</b><button type="submit" class="link strong">Save</button></div>`;
-const saveNote = () => `<p class="note">${gsLinked() ? `Saves to your Google Sheet “${esc(S.gsheet.name)}”.` : 'Saved on this device only. Link a Google Sheet in Settings to save edits back to your plan.'}</p>`;
+const sheetHead = (title, saveLabel = 'Save') => `<div class="sheet-h"><button type="button" class="link" data-close>Cancel</button><b>${title}</b><button type="submit" class="link strong">${saveLabel}</button></div>`;
+const saveNote = () => '';
+
+/* ---------- log / edit a workout (Strava-style) ---------- */
+const WTYPES = [['Run', '🏃', 'Run'], ['F45', '🔥', 'F45'], ['Strength', '🏋️', 'Strength'], ['HIIT', '⚡', 'HIIT']];
+const partOfDay = start => { const h = +(start || '12').slice(0, 2); return h < 5 ? 'Night' : h < 12 ? 'Morning' : h < 17 ? 'Afternoon' : h < 21 ? 'Evening' : 'Night'; };
+const defaultTitle = (type, start) => `${partOfDay(start)} ${type === 'Run' ? 'Run' : type === 'F45' ? 'F45' : type === 'HIIT' ? 'HIIT' : 'Strength Workout'}`;
+const EFFORT = ['', 'Easy', 'Easy', 'Moderate', 'Moderate', 'Moderate', 'Hard', 'Hard', 'Very hard', 'Very hard', 'Max effort'];
+
+function editWorkout(id) {
+  const now = new Date();
+  const w = id ? S.workouts.find(x => x.id === id) : null;
+  if (id && !w) return;
+  const v = w || { type: 'Run', date: TODAY, start: `${pad(now.getHours())}:${pad(now.getMinutes())}`, title: '', miles: '', sec: 0, hr: '', effort: '', notes: '' };
+  const form = openSheet(`${sheetHead(w ? 'Edit workout' : 'Log workout', w ? 'Save' : 'Save')}
+    <div class="seg type-seg" role="radiogroup">${WTYPES.map(([k, ic, l]) => `<label><input type="radio" name="type" value="${k}" ${v.type === k ? 'checked' : ''}><span>${ic} ${l}</span></label>`).join('')}</div>
+    <label class="f">Title</label><input name="title" type="text" value="${esc(v.title)}" placeholder="${esc(defaultTitle(v.type, v.start))}">
+    <div class="row2 even"><div><label class="f">Date</label><input name="date" type="date" value="${v.date}" max="${addDays(TODAY, 1)}"></div>
+      <div><label class="f">Start time</label><input name="start" type="time" value="${v.start || ''}"></div></div>
+    <div class="row2 even"><div class="run-only"><label class="f">Distance (mi)</label><input name="miles" type="number" step="0.01" min="0" inputmode="decimal" value="${v.miles || ''}" placeholder="0.00"></div>
+      <div><label class="f">Moving time</label><input name="time" type="text" inputmode="numeric" value="${v.sec ? fmtDur(v.sec) : ''}" placeholder="h:mm:ss"></div></div>
+    <div class="pace-line run-only" id="pace-line"></div>
+    <div class="row2 even"><div><label class="f">Avg heart rate</label><input name="hr" type="number" min="40" max="230" inputmode="numeric" value="${v.hr ? Math.round(v.hr) : ''}" placeholder="bpm"></div><div></div></div>
+    <label class="f">How did it feel? <span id="effort-label" class="muted"></span></label>
+    <input name="effort" type="range" min="0" max="10" step="1" value="${v.effort || 0}" class="effort">
+    <div class="effort-scale"><span>Skip</span><span>Easy</span><span>Moderate</span><span>Hard</span><span>Max</span></div>
+    <label class="f">Notes</label><textarea name="notes" rows="3" placeholder="How did it go? Shoes, weather, fueling…">${esc(v.notes)}</textarea>
+    ${w ? '<button type="button" class="btn danger" data-act="delete-workout">Delete workout</button>' : ''}`,
+  fd => {
+    const type = fd.get('type') || 'Run', isRun = type === 'Run';
+    const sec = parseClock(fd.get('time')), miles = isRun ? +fd.get('miles') || 0 : 0;
+    const date = fd.get('date');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('Pick a date');
+    if (isRun && !(miles > 0)) throw new Error('Enter the distance');
+    if (fd.get('time') && !(sec > 0)) throw new Error('Use a time like 32:15 or 1:05:30');
+    if (isRun && !(sec > 0)) throw new Error('Enter the moving time');
+    const rec = {
+      id: w ? w.id : `app-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, source: w ? w.source : 'app',
+      date, start: fd.get('start') || '', type, title: fd.get('title').trim(), miles, sec: sec > 0 ? sec : 0,
+      hr: +fd.get('hr') || null, effort: +fd.get('effort') || null, notes: fd.get('notes').trim(),
+    };
+    setWorkouts([...S.workouts.filter(x => x.id !== rec.id), rec]);
+    return w ? 'Workout updated' : `${isRun ? mi1(miles) + ' mi run' : type} logged`;
+  });
+  const sync = () => {
+    const fd = new FormData(form), type = fd.get('type'), isRun = type === 'Run';
+    form.querySelectorAll('.run-only').forEach(el => (el.style.display = isRun ? '' : 'none'));
+    form.elements.title.placeholder = defaultTitle(type, fd.get('start'));
+    const sec = parseClock(fd.get('time')), mi = +fd.get('miles');
+    document.getElementById('pace-line').innerHTML = isRun && sec > 0 && mi > 0 ? `Pace <b>${fmtPace(sec / mi)}</b> /mi` : '';
+    const e = +fd.get('effort');
+    document.getElementById('effort-label').textContent = e ? `${e}/10 · ${EFFORT[e]}` : '';
+  };
+  form.addEventListener('input', sync); form.addEventListener('change', sync); sync();
+  form.querySelector('[data-act=delete-workout]')?.addEventListener('click', () => {
+    if (!confirm('Delete this workout?')) return;
+    setWorkouts(S.workouts.filter(x => x.id !== w.id)); closeSheet(); render(); toast('Workout deleted');
+  });
+}
+
+/* ---------- backup ---------- */
+function exportBackup() {
+  const data = { app: 'marathon-trainer', version: 2, exportedAt: new Date().toISOString(), plan: S.plan, workouts: S.workouts };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const file = new File([blob], `marathon-backup-${TODAY}.json`, { type: 'application/json' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Marathon backup' }).catch(() => {}); return; }
+  const u = URL.createObjectURL(blob), l = document.createElement('a'); l.href = u; l.download = file.name; l.click(); setTimeout(() => URL.revokeObjectURL(u), 1000);
+}
+function restoreBackup() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = async () => {
+    try {
+      const d = JSON.parse(await inp.files[0].text());
+      if (d.app !== 'marathon-trainer' || !d.plan || !Array.isArray(d.workouts)) throw new Error('That isn\'t a Marathon backup file');
+      if (!confirm(`Restore the backup from ${new Date(d.exportedAt).toLocaleDateString()}? It replaces your current plan and workouts.`)) return;
+      S.plan = d.plan; save('mt.plan', S.plan); setWorkouts(d.workouts); toast(`Restored ${d.workouts.length} workouts`); render();
+    } catch (e) { toast('Restore failed: ' + e.message, 5000); }
+  };
+  inp.click();
+}
 
 function editWeek(i) {
   const w = S.plan.weeks[i], phases = [...new Set(S.plan.weeks.map(x => x.phase).filter(Boolean))];
@@ -273,7 +365,7 @@ const RUN_TYPES = ['Run', 'TrailRun', 'VirtualRun'];
 const XT_TYPES = ['WeightTraining', 'HighIntensityIntervalTraining', 'Crossfit', 'Workout'];
 const XT_LABEL = { WeightTraining: 'Strength', HighIntensityIntervalTraining: 'HIIT', Crossfit: 'CrossFit', Workout: 'F45/Workout' };
 // Spreadsheet log is the history; Strava supplies runs dated after its last entry.
-const sheetCutoff = () => (S.plan && S.plan.log.length ? S.plan.log.reduce((m, l) => (l.date > m ? l.date : m), '') : null);
+const sheetCutoff = () => (S.workouts || []).filter(w => w.source === 'import').reduce((m, w) => (w.date > m ? w.date : m), '') || null;
 const redirectURI = () => location.origin + location.pathname;
 const stravaReady = () => !!(S.strava.clientId && S.strava.clientSecret);
 const stravaConnected = () => !!S.strava.refresh;
@@ -314,7 +406,8 @@ const mapAct = a => {
 };
 async function sync(manual) {
   if (!stravaConnected()) { if (manual) toast('Connect Strava in Settings first'); return; }
-  const btn = document.getElementById('sync-btn'); btn.classList.add('spin');
+  const btn = document.querySelector('[data-act=sync]') || document.createElement('i');
+  btn.classList.add('spin');
   try {
     const tok = await ensureToken();
     const cut = sheetCutoff();
@@ -338,11 +431,17 @@ async function sync(manual) {
 
 /* ---------- derived data ---------- */
 function activities() {
+  const out = S.workouts.map(w => ({
+    id: w.id, wid: w.id, date: w.date, time: w.start || '', type: w.type, isRun: w.type === 'Run', isXT: w.type !== 'Run',
+    name: w.title || (w.source === 'import' ? (w.type === 'Run' ? 'Run' : w.type) : defaultTitle(w.type, w.start)),
+    miles: w.miles || 0, sec: w.sec || 0, hr: w.hr || null, effort: w.effort || null, notes: w.notes || '', source: w.source,
+  }));
+  // Strava (only works with a Strava subscription): add anything not already logged here.
   const cut = sheetCutoff();
-  const out = S.acts.filter(a => (a.isRun || a.isXT) && (!cut || a.date > cut));
-  if (S.plan) for (const [i, l] of S.plan.log.entries()) {
-    if (l.miles > 0) out.push({ id: 'x' + i, date: l.date, time: '', name: 'Run (spreadsheet)', type: 'Run', isRun: true, isXT: false, miles: l.miles, sec: l.sec, hr: null, source: 'sheet' });
-    if (l.xt) out.push({ id: 'f' + i, date: l.date, time: '', name: 'F45 (spreadsheet)', type: 'F45', isRun: false, isXT: true, miles: 0, sec: 0, hr: null, source: 'sheet' });
+  for (const a of S.acts) {
+    if ((!a.isRun && !a.isXT) || (cut && a.date <= cut)) continue;
+    if (out.some(o => o.date === a.date && o.isRun === a.isRun && Math.abs(o.miles - a.miles) < 0.15)) continue;
+    out.push(a);
   }
   return out.sort((a, b) => (a.date + a.time < b.date + b.time ? 1 : -1));
 }
@@ -550,11 +649,12 @@ function ring(val, max, size = 92) {
 const runRow = r => {
   const d = parseISO(r.date);
   const meta = r.isRun
-    ? [r.type, fmtDur(r.sec), r.sec ? fmtPace(r.sec / r.miles) + '/mi' : '', r.hr ? `♥ ${Math.round(r.hr)}` : '']
-    : ['Cross-train · ' + (XT_LABEL[r.type] || r.type), r.hr ? `♥ ${Math.round(r.hr)}` : ''];
+    ? [fmtDur(r.sec), r.sec ? fmtPace(r.sec / r.miles) + '/mi' : '', r.hr ? `♥ ${Math.round(r.hr)}` : '', r.effort ? `effort ${r.effort}/10` : '']
+    : ['Cross-train · ' + (XT_LABEL[r.type] || r.type), r.sec ? fmtDur(r.sec) : '', r.hr ? `♥ ${Math.round(r.hr)}` : '', r.effort ? `effort ${r.effort}/10` : ''];
   const right = r.isRun ? `${mi1(r.miles)}<small>mi</small>` : r.sec ? `${Math.round(r.sec / 60)}<small>min</small>` : `✓<small>done</small>`;
-  return `<div class="run"><div class="date"><b>${d.getDate()}</b><span>${MON[d.getMonth()]}</span></div>
-    <div class="grow"><div class="nm">${esc(r.name)}</div><div class="meta">${esc(meta.filter(Boolean).join(' · '))}</div></div>
+  const src = r.source === 'strava' ? ' <span class="src">Strava</span>' : '';
+  return `<div class="run${r.wid ? ' tappable' : ''}"${r.wid ? ` data-wid="${esc(r.wid)}"` : ''}><div class="date"><b>${d.getDate()}</b><span>${MON[d.getMonth()]}</span></div>
+    <div class="grow"><div class="nm">${esc(r.name)}${src}</div><div class="meta">${esc(meta.filter(Boolean).join(' · '))}</div>${r.notes ? `<div class="notes">${esc(r.notes)}</div>` : ''}</div>
     <div class="mi">${right}</div></div>`;
 };
 const xtRow = w => {
@@ -564,9 +664,9 @@ const xtRow = w => {
   return `<div class="session"><div class="check ${full ? 'done' : w.xt ? 'partial' : ''}">${full ? '✓' : ''}</div>
     <div><div class="t">Cross-train</div><div class="d">${esc(detail)}</div></div><div class="m">${w.xt}/${w.xtTarget || 0}</div></div>`;
 };
-const emptyPlan = () => `<div class="card empty"><div class="big">🏃</div><p><b>Import your training plan</b></p>
-  <p class="note">Link the Google Sheet with your plan (it stays in sync both ways), or import a one-time copy from an .xlsx file. The app reads the weekly plan, your paces, and your run log.</p>
-  <button class="btn" data-act="goto-settings">Link a Google Sheet</button>
+const emptyPlan = () => `<div class="card empty"><div class="big">🏃</div><p><b>Bring in your training plan</b></p>
+  <p class="note">Import your plan, paces and run history once from your spreadsheet. After that everything lives in the app and you can edit it here.</p>
+  <button class="btn" data-act="goto-settings">Import from Google Sheet</button>
   <button class="btn secondary" data-act="import">Import an .xlsx file</button></div>`;
 
 function viewToday() {
@@ -628,37 +728,19 @@ function viewRuns() {
       <div class="stat"><div class="k">Runs</div><div class="v">${r.length}</div></div>
       <div class="stat"><div class="k">Miles</div><div class="v">${Math.round(sum(r, x => x.miles))}</div></div>
       <div class="stat"><div class="k">Cross-train</div><div class="v">${all.filter(a => a.isXT).length}</div></div></div>
-    <div class="card list">${list.map(runRow).join('') || '<div class="empty">Nothing here yet. Connect Strava or import your spreadsheet.</div>'}</div>`;
+    <button class="btn" data-act="log" style="margin:0 0 12px">+ Log workout</button>
+    <div class="card list">${list.map(runRow).join('') || '<div class="empty">Nothing here yet. Tap + to log a workout.</div>'}</div>
+    <p class="note" style="text-align:center">Tap any workout to edit or delete it.</p>`;
 }
 
 function viewSettings() {
-  const P = S.plan, st = S.strava;
-  const g = S.gsheet;
+  const P = S.plan, st = S.strava, g = S.gsheet, cut = sheetCutoff();
+  const nApp = S.workouts.filter(w => w.source === 'app').length;
   return `
-  <h2>Google Sheet</h2><div class="card">
-    ${gsLinked() ? `<div class="ok">✓ Linked to “${esc(g.name)}”</div><div class="note">Your plan loads from this sheet each time you open the app, and edits you make here save back to it. Last refreshed ${new Date(g.at).toLocaleString()}.</div>
-      <button class="btn" data-act="gs-refresh">Refresh plan now</button><button class="btn danger" data-act="gs-unlink">Unlink</button>`
-    : `<div class="note">Keep your plan in a Google Sheet so it stays in sync. Edit it in Google Sheets or in this app. Setup steps are in the README on GitHub.</div>
-      <label class="f" for="gslink">Sheet link (web app URL#key)</label><input id="gslink" type="text" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec#key">
-      <button class="btn" data-act="gs-link">Link Google Sheet</button>`}</div>
-
-  ${P ? `<h2>Race goal</h2><div class="card">
-    <div class="stats"><div class="stat"><div class="k">Goal</div><div class="v">${fmtDur(P.race.goalSec)}</div><div class="s">${fmtPace(P.race.goalPace)}/mi</div></div>
-      <div class="stat"><div class="k">Easy</div><div class="v">${fmtPace(P.race.easyPace)}</div><div class="s">+${fmtDur(P.race.easyOff ?? P.race.easyPace - P.race.goalPace)}</div></div>
-      <div class="stat"><div class="k">Quicker</div><div class="v">${fmtPace(P.race.quickPace)}</div><div class="s">−${fmtDur(P.race.quickOff ?? P.race.goalPace - P.race.quickPace)}</div></div></div>
-    <button class="btn secondary" data-act="edit-goals">Change goal &amp; paces</button></div>` : ''}
-
-  <h2>Training plan</h2><div class="card">
-    ${P ? `<div class="ok">✓ ${esc(P.source === 'gsheet' ? 'Google Sheet: ' + P.fileName : P.fileName)}</div><div class="note">${P.weeks.length} weeks · race ${fmtDate(P.race.date)} · ${P.log.length} logged runs · ${P.source === 'gsheet' ? 'loaded' : 'imported'} ${new Date(P.importedAt).toLocaleDateString()}${P.edited ? ' · edited in app' : ''}</div>` : '<div class="note">No plan yet. Link a Google Sheet above, or import an .xlsx file.</div>'}
-    <div class="note" style="margin-top:8px">To change a week, open the <b>Plan</b> tab, tap a week, then tap <b>Edit week</b>.</div>
-    ${gsLinked() ? '' : `<button class="btn ${P ? 'secondary' : ''}" data-act="import">${P ? 'Re-import spreadsheet' : 'Import spreadsheet (.xlsx)'}</button>`}
-    ${sheetCutoff() ? `<div class="note" style="margin-top:8px"><b>Runs through ${fmtDate(sheetCutoff())}</b> come from the spreadsheet. After that, Strava adds your runs plus cross-training (F45, strength, HIIT). Walks and other activities are ignored.</div>` : ''}
-    <div class="note" style="margin-top:8px">If you log more runs in the sheet, the handoff date moves forward with it.</div></div>
-
   <h2>Strava</h2><div class="card">
-    ${stravaConnected() ? `<div class="ok">✓ Connected${st.athlete?.name ? ' as ' + esc(st.athlete.name) : ''}</div><div class="note">${S.acts.length} activities · last sync ${S.lastSync ? new Date(S.lastSync).toLocaleString() : 'never'}</div>
+    ${stravaConnected() ? `<div class="ok">✓ Connected${st.athlete?.name ? ' as ' + esc(st.athlete.name) : ''}</div><div class="note">${S.acts.length} activities synced${cut ? ` after ${fmtDate(cut)}` : ''} · last sync ${S.lastSync ? new Date(S.lastSync).toLocaleString() : 'never'}. Runs, F45/workouts, strength and HIIT come in automatically; walks are ignored.</div>
       <button class="btn strava" data-act="sync">Sync now</button><button class="btn danger" data-act="disconnect">Disconnect</button>`
-    : `<div class="note">Create a free API app at <b>strava.com/settings/api</b> with <i>Authorization Callback Domain</i> set to <code>${esc(location.hostname || 'localhost')}</code>, then paste its keys here.</div>
+    : `<div class="note">Needs a Strava subscription. Create an API app at <b>strava.com/settings/api</b> with <i>Authorization Callback Domain</i> <code>${esc(location.hostname || 'localhost')}</code>, then paste its keys here.</div>
       <label class="f" for="cid">Client ID</label><input id="cid" type="text" inputmode="numeric" autocomplete="off" value="${esc(st.clientId || '')}">
       <label class="f" for="csec">Client Secret</label><input id="csec" type="password" autocomplete="off" value="${esc(st.clientSecret || '')}">
       <button class="btn strava" data-act="connect">Connect with Strava</button>
@@ -667,10 +749,28 @@ function viewSettings() {
         <button class="btn secondary" data-act="code">Use code</button></details>`}
     <div class="note" style="margin-top:10px">Keys and tokens stay on this phone only.</div></div>
 
-  <h2>Data</h2><div class="card">
-    <button class="btn secondary" data-act="export">Export data (JSON)</button>
-    <button class="btn danger" data-act="reset">Reset app</button></div>
-  <p class="note" style="text-align:center;margin-top:16px">Apple Watch runs reach the app through Strava.<br>Today: ${fmtDate(TODAY)}, ${parseISO(TODAY).getFullYear()}</p>`;
+  ${P ? `<h2>Race goal</h2><div class="card">
+    <div class="stats"><div class="stat"><div class="k">Goal</div><div class="v">${fmtDur(P.race.goalSec)}</div><div class="s">${fmtPace(P.race.goalPace)}/mi</div></div>
+      <div class="stat"><div class="k">Easy</div><div class="v">${fmtPace(P.race.easyPace)}</div><div class="s">+${fmtDur(P.race.easyOff ?? P.race.easyPace - P.race.goalPace)}</div></div>
+      <div class="stat"><div class="k">Quicker</div><div class="v">${fmtPace(P.race.quickPace)}</div><div class="s">−${fmtDur(P.race.quickOff ?? P.race.goalPace - P.race.quickPace)}</div></div></div>
+    <button class="btn secondary" data-act="edit-goals">Change goal &amp; paces</button></div>` : ''}
+
+  <h2>Your data</h2><div class="card">
+    <div class="note">Everything is kept in this app and is yours to edit: the plan (Plan tab → tap a week → <b>Edit week</b>), your goal (above), and every workout (Runs tab → tap one). ${S.workouts.length} workouts saved${nApp ? `, ${nApp} logged in the app` : ''}.</div>
+    <button class="btn secondary" data-act="export">Back up to a file</button>
+    <button class="btn secondary" data-act="restore">Restore a backup</button>
+    <div class="note" style="margin-top:8px">Removing the app from your home screen erases its data, so save a backup now and then.</div></div>
+
+  <h2>Starting data</h2><div class="card">
+    ${P ? `<div class="ok">✓ Started from ${esc(P.source || P.fileName)}</div><div class="note">${P.weeks.length} weeks · race ${fmtDate(P.race.date)}${cut ? ` · history through ${fmtDate(cut)}` : ''} · imported ${new Date(P.importedAt).toLocaleDateString()}</div>`
+      : '<div class="note">Import your plan, paces and run history from your spreadsheet to get started.</div>'}
+    <label class="f" for="gslink">Google Sheet link (web app URL#key)</label><input id="gslink" type="text" autocomplete="off" value="${esc(g ? g.url + '#' + g.key : '')}" placeholder="https://script.google.com/macros/s/…/exec#key">
+    <button class="btn ${P ? 'secondary' : ''}" data-act="gs-import">${P ? 'Re-import from Google Sheet' : 'Import from Google Sheet'}</button>
+    <button class="btn secondary" data-act="import">Import an .xlsx file</button>
+    ${P ? '<div class="note" style="margin-top:8px">Re-importing replaces the plan and the imported history. Workouts you logged in the app are kept.</div>' : ''}</div>
+
+  <button class="btn danger" data-act="reset" style="margin-top:20px">Erase everything on this device</button>
+  <p class="note" style="text-align:center;margin-top:16px">Today: ${fmtDate(TODAY)}, ${parseISO(TODAY).getFullYear()}</p>`;
 }
 
 /* ---------- charts ---------- */
@@ -769,11 +869,9 @@ document.querySelector('.tabbar').addEventListener('click', e => {
   const b = e.target.closest('button[data-tab]'); if (!b) return;
   S.tab = b.dataset.tab; render(); window.scrollTo(0, 0);
 });
-document.getElementById('sync-btn').addEventListener('click', async () => {
-  if (gsLinked()) await loadSheet(!stravaConnected());
-  if (stravaConnected() || !gsLinked()) sync(true);
-});
+document.getElementById('log-btn').addEventListener('click', () => editWorkout());
 document.getElementById('view').addEventListener('click', async e => {
+  const row = e.target.closest('[data-wid]'); if (row) { editWorkout(row.dataset.wid); return; }
   const wk = e.target.closest('.week'); if (wk) { document.getElementById('wd-' + wk.dataset.week).classList.toggle('open'); return; }
   const f = e.target.closest('[data-filter]'); if (f) { S.runFilter = f.dataset.filter; render(); return; }
   const a = e.target.closest('[data-act]'); if (!a) return;
@@ -783,18 +881,15 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'goto-settings') { S.tab = 'settings'; render(); }
   else if (act === 'edit-week') editWeek(+a.dataset.i);
   else if (act === 'edit-goals') editGoals();
-  else if (act === 'gs-link') { a.disabled = true; a.textContent = 'Linking…'; await linkSheet(document.getElementById('gslink').value); a.disabled = false; a.textContent = 'Link Google Sheet'; }
-  else if (act === 'gs-refresh') loadSheet(true);
-  else if (act === 'gs-unlink') { if (confirm('Unlink the Google Sheet? The app keeps the last copy of your plan, and edits will stay on this device.')) { S.gsheet = null; localStorage.removeItem('mt.gsheet'); if (S.plan) S.plan.source = 'local'; save('mt.plan', S.plan); render(); } }
+  else if (act === 'gs-import') { a.disabled = true; await importSheet(document.getElementById('gslink').value); a.disabled = false; }
+  else if (act === 'log') editWorkout();
+  else if (act === 'restore') restoreBackup();
   else if (act === 'connect') { readKeys(); stravaAuthorize(); }
   else if (act === 'code') { readKeys(); const c = document.getElementById('code').value.trim(); if (!c) return; try { await exchangeCode(c); } catch (err) { toast(err.message, 5000); } }
   else if (act === 'sync') sync(true);
   else if (act === 'disconnect') { if (confirm('Disconnect Strava? Synced activities will be removed from this phone.')) { S.strava = { clientId: S.strava.clientId, clientSecret: S.strava.clientSecret }; S.acts = []; save('mt.strava', S.strava); save('mt.acts', []); render(); } }
-  else if (act === 'export') {
-    const blob = new Blob([JSON.stringify({ plan: S.plan, activities: S.acts }, null, 2)], { type: 'application/json' });
-    const u = URL.createObjectURL(blob), l = document.createElement('a'); l.href = u; l.download = `marathon-data-${TODAY}.json`; l.click(); setTimeout(() => URL.revokeObjectURL(u), 1000);
-  }
-  else if (act === 'reset') { if (confirm('Erase the plan, Strava keys and synced runs from this device?')) { ['mt.plan', 'mt.strava', 'mt.acts', 'mt.lastSync'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
+  else if (act === 'export') exportBackup();
+  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.tab === 'charts' && drawCharts());
 
@@ -817,7 +912,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.
     }
   }
   render();
-  if (gsLinked()) await loadSheet(false);
+  navigator.storage?.persist?.().catch(() => {});
   if (stravaConnected() && (!S.lastSync || Date.now() - S.lastSync > 30 * 60e3)) sync(false);
 })();
 

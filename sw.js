@@ -1,6 +1,6 @@
 // Offline support: app files network-first (so updates show up), CDN libraries cache-first, Strava never cached.
-const CACHE = 'mt-v6';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png'];
+const CACHE = 'mt-v7';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'viz.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

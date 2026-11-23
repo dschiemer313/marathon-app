@@ -69,7 +69,9 @@ The sheet needs these labels, which it already has:
 | **Race plan** | Boston course elevation profile you can drag along; mile-by-mile target paces adjusted for hills; gel timing; 5K checkpoint "wristband"; advice for each section |
 | **Plan** | All weeks by phase with planned vs actual miles. Tap a week for its runs, notes, and **Edit week**. |
 | **Charts** | Training calendar heatmap (every day, shaded by miles, with cross-training marked), weekly mileage, cumulative miles, pace per run (with goal and easy pace lines), long-run progression, cross-training vs target, predicted marathon time, Apple Watch heart rate |
-| **Runs** | Every run and cross-training session, filterable |
+| **Charts → Explore** | **Virtual Boston** (your training miles laid along the course, lap after lap) · **Route map** (every Strava GPS route on one map, or as line art) · **Training bloom** (each run a petal around the calendar; save as an image) |
+| **Charts → Fitness, fatigue & form** | Training-load model from pace and time; projects your plan forward to show race-day freshness |
+| **Runs** | Every run and cross-training session, filterable. Tap a Strava run for its route and the **ghost runner**: mile splits vs. an easy, quicker, goal-pace or Boston-plan ghost |
 | **Settings** | Google Sheet link, race goal and paces, Strava, data export |
 
 **Coaching tips** are rule-based, using your sheet's paces:

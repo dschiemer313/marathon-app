@@ -16,6 +16,8 @@ const S = {
   tab: 'today',
   runFilter: 'all',
   charts: [],
+  det: load('mt.det', {}),   // Strava mile splits per activity (ghost runner)
+  mapMode: 'map', mapFilter: 'all', map: null,
 };
 
 /* ---------- date + format helpers ---------- */
@@ -686,6 +688,7 @@ const mapAct = a => {
     id: a.id, date: a.start_date_local.slice(0, 10), time: a.start_date_local.slice(11, 16), name: a.name, type: t,
     isRun: run, isXT: XT_TYPES.includes(t), miles: (a.distance || 0) / 1609.344, sec: a.moving_time || 0,
     elev: (a.total_elevation_gain || 0) * 3.28084, hr: a.average_heartrate || null, maxhr: a.max_heartrate || null, source: 'strava',
+    poly: (a.map && a.map.summary_polyline) || '',
   };
 };
 async function sync(manual) {
@@ -694,8 +697,9 @@ async function sync(manual) {
   btn.classList.add('spin');
   try {
     const tok = await ensureToken();
-    const cut = sheetCutoff();
-    const from = cut ? addDays(cut, 1) : S.plan ? addDays(S.plan.weeks[0].start, -42) : addDays(TODAY, -180);
+    // Fetch from before the plan starts so older runs bring their routes; activities() still skips
+    // anything covered by the imported history.
+    const from = S.plan ? addDays(S.plan.weeks[0].start, -42) : addDays(TODAY, -180);
     const after = Math.floor(parseISO(from).getTime() / 1000);
     let page = 1, all = [];
     while (page < 20) {
@@ -952,7 +956,8 @@ const runRow = r => {
   const right = r.isRun ? `${mi1(r.miles)}<small>mi</small>` : r.sec ? `${Math.round(r.sec / 60)}<small>min</small>` : `✓<small>done</small>`;
   const src = r.source === 'strava' ? ' <span class="src">Strava</span>' : '';
   const tcls = r.isRun ? 't-run' : /F45|^Workout$/.test(r.type) ? 't-f45' : /Strength|Weight/.test(r.type) ? 't-strength' : 't-hiit';
-  return `<div class="run ${tcls}${r.wid ? ' tappable' : ''}"${r.wid ? ` data-wid="${esc(r.wid)}"` : ''}><div class="date"><b>${d.getDate()}</b><span>${MON[d.getMonth()]}</span></div>
+  const tap = r.wid ? ` data-wid="${esc(r.wid)}"` : r.source === 'strava' ? ` data-sid="${esc(r.id)}"` : '';
+  return `<div class="run ${tcls}${tap ? ' tappable' : ''}"${tap}><div class="date"><b>${d.getDate()}</b><span>${MON[d.getMonth()]}</span></div>
     <div class="grow"><div class="nm">${esc(r.name)}${src}</div><div class="meta">${esc(meta.filter(Boolean).join(' · '))}</div>${r.notes ? `<div class="notes">${esc(r.notes)}</div>` : ''}</div>
     <div class="mi">${right}</div></div>`;
 };
@@ -992,6 +997,7 @@ function viewToday() {
     ${wst ? `<div class="${'st-' + wst}" style="margin-top:8px;font-size:13px"><span class="status-dot"></span><span class="status-txt">${ST_LABEL[wst]}</span> <span class="muted">this week</span></div>` : ''}</div></div>
     ${ringLegend(rings)}</div>
   <button class="card race-link" data-act="goto-race"><span>🏁</span><div><b>Boston race plan</b><div class="note">Course profile and mile splits for ${fmtHM(P.goalSec)}</div></div><span class="chev">›</span></button>
+  ${journeyCard()}
   <div class="stats">
     <div class="stat"><div class="k">Goal</div><div class="v">${fmtHM(P.goalSec)}</div><div class="s">${fmtPace(P.goalPace)}/mi</div></div>
     <div class="stat ${pred ? 'st-' + predStatus(pred.sec, P.goalSec) : ''}"><div class="k">Predicted</div><div class="v">${pred ? fmtHM(pred.sec) : '–'}</div><div class="s">${pred ? fmtPace(pred.sec / P.distance) + '/mi' : 'need 4+ mi run'}</div></div>
@@ -1090,7 +1096,7 @@ function viewCharts() {
   const hasHR = runs().some(r => r.hr);
   const card = (id, title, sub, legend) => `<div class="card chart-card"><h3>${title}</h3><div class="sub">${sub}</div>${legend ? `<div class="legend">${legend}</div>` : ''}<div class="chart-wrap"><canvas id="${id}" role="img" aria-label="${esc(title)}"></canvas></div></div>`;
   const L = (cls, color, label) => `<span><i class="${cls}" style="background:${color}"></i>${label}</span>`;
-  return heatmapCard() + card('c-weekly', 'Weekly mileage', 'Actual miles vs plan, colored by how each week went', L('', 'var(--good)', 'On track') + L('', 'var(--warning)', 'A bit behind') + L('', 'var(--critical)', 'Behind') + L('dash', 'var(--plan)', 'Plan'))
+  return exploreRow() + heatmapCard() + fitnessCard() + card('c-weekly', 'Weekly mileage', 'Actual miles vs plan, colored by how each week went', L('', 'var(--good)', 'On track') + L('', 'var(--warning)', 'A bit behind') + L('', 'var(--critical)', 'Behind') + L('dash', 'var(--plan)', 'Plan'))
     + card('c-cum', 'Cumulative miles', 'Are you banking the miles?', L('', 'var(--series-1)', 'Actual') + L('dash', 'var(--plan)', 'Plan'))
     + card('c-pace', 'Pace per run', 'Higher is faster', L('dot', 'var(--series-1)', 'Run') + L('', 'var(--series-2)', 'Goal pace') + L('', 'var(--series-3)', 'Easy pace'))
     + card('c-long', 'Long run progression', 'Longest run each week vs the planned long run', L('', 'var(--series-1)', 'Longest actual') + L('dash', 'var(--plan)', 'Planned long'))
@@ -1165,17 +1171,18 @@ function drawCharts() {
 }
 
 /* ---------- render + events ---------- */
-const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising', race: 'Race plan' };
+const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising', race: 'Race plan', journey: 'Virtual Boston', routes: 'Route map', bloom: 'Training bloom' };
 function render() {
   const view = document.getElementById('view');
   document.getElementById('hdr-title').textContent = TITLES[S.tab];
   document.getElementById('hdr-eyebrow').textContent = S.plan ? `${S.plan.race.name} · ${fmtHM(S.plan.race.goalSec)} goal` : 'Marathon Trainer';
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === S.tab));
-  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund, race: viewRace }[S.tab];
+  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund, race: viewRace, journey: viewJourney, routes: viewRoutes, bloom: viewBloom }[S.tab];
+  if (S.map) { S.map.remove(); S.map = null; }
   view.innerHTML = fn();
   if (S.tab === 'plan') view.querySelector('.week.current')?.scrollIntoView({ block: 'center' });
   S.charts.forEach(c => c.destroy()); S.charts = [];
-  if (S.tab === 'charts') drawCharts(); else if (S.tab === 'fund') drawFundChart(); else if (S.tab === 'race') initRaceProfile();
+  if (S.tab === 'charts') { drawCharts(); drawFitness(); } else if (S.tab === 'fund') drawFundChart(); else if (S.tab === 'race') initRaceProfile(); else if (S.tab === 'routes') initRouteMap();
 }
 
 document.querySelector('.tabbar').addEventListener('click', e => {
@@ -1185,6 +1192,10 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 document.getElementById('log-btn').addEventListener('click', () => editWorkout());
 document.getElementById('view').addEventListener('click', async e => {
   const hd = e.target.closest('[data-day]'); if (hd) { showHeatDay(hd.dataset.day); return; }
+  const pe = e.target.closest('[data-bloom]'); if (pe) { showBloomRun(pe.dataset.bloom); return; }
+  const sr = e.target.closest('[data-sid]'); if (sr) { openRun(sr.dataset.sid); return; }
+  const mm = e.target.closest('[data-mapmode]'); if (mm) { S.mapMode = mm.dataset.mapmode; render(); return; }
+  const mf = e.target.closest('[data-mapf]'); if (mf) { S.mapFilter = mf.dataset.mapf; render(); return; }
   const sp = e.target.closest('.split[data-mile]'); if (sp && S.tab === 'race') { document.getElementById('profile')?.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
   const th = e.target.closest('[data-thank]'); if (th) { const id = th.dataset.thank; if (S.thanks[id]) delete S.thanks[id]; else S.thanks[id] = true; save('mt.thanks', S.thanks); render(); return; }
   const row = e.target.closest('[data-wid]'); if (row) { editWorkout(row.dataset.wid); return; }
@@ -1198,6 +1209,8 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'goto-fund') { S.tab = 'fund'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-race') { S.tab = 'race'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-today') { S.tab = 'today'; render(); window.scrollTo(0, 0); }
+  else if (/^goto-(journey|routes|bloom)$/.test(act)) { S.tab = act.slice(5); render(); window.scrollTo(0, 0); }
+  else if (act === 'bloom-save') { a.disabled = true; try { await saveBloom(); } catch (err) { toast('Could not make the image'); } a.disabled = false; }
   else if (act === 'share-fund') { e.stopPropagation(); shareFund(); }
   else if (act === 'fund-refresh') { e.preventDefault(); loadFund(true); }
   else if (act === 'fund-save') {
@@ -1216,9 +1229,9 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'sync') sync(true);
   else if (act === 'disconnect') { if (confirm('Disconnect Strava? Synced activities will be removed from this phone.')) { S.strava = { clientId: S.strava.clientId, clientSecret: S.strava.clientSecret }; S.acts = []; save('mt.strava', S.strava); save('mt.acts', []); render(); } }
   else if (act === 'export') exportBackup();
-  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet', 'mt.fund', 'mt.thanks'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
+  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet', 'mt.fund', 'mt.thanks', 'mt.det'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
 });
-matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.tab === 'charts' && drawCharts());
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => ['charts', 'routes', 'bloom'].includes(S.tab) && render());
 
 /* ---------- boot ---------- */
 (async function boot() {
@@ -1241,7 +1254,9 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.
   render();
   navigator.storage?.persist?.().catch(() => {});
   if (S.fund?.id && (!S.fund.at || Date.now() - S.fund.at > 30 * 60e3)) loadFund(false);
-  if (stravaConnected() && (!S.lastSync || Date.now() - S.lastSync > 30 * 60e3)) sync(false);
+  // Older syncs didn't keep routes: re-sync once so the route map has them.
+  const needRoutes = S.acts.length && !S.acts.some(a => 'poly' in a);
+  if (stravaConnected() && (needRoutes || !S.lastSync || Date.now() - S.lastSync > 30 * 60e3)) sync(false);
 })();
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});

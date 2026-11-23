@@ -320,7 +320,9 @@ function shareFund() {
 function fundBar(d) {
   const top = Math.max(d.target || 0, d.total || 0, d.minimum || 0) || 1;
   const pct = Math.min(100, (d.total / top) * 100), minPct = d.minimum ? (d.minimum / top) * 100 : null;
-  return `<div class="fbar" role="img" aria-label="${money(d.total)} of ${money(d.target)} raised"><div class="fill${d.minimum && d.total >= d.minimum ? ' met' : ''}" style="width:${pct}%"></div>${minPct && minPct < 100 ? `<i class="tick" style="left:${minPct}%"></i>` : ''}</div>
+  const left = d.deadline ? daysBetween(TODAY, d.deadline.slice(0, 10)) : 999;
+  const st = d.total >= (d.minimum || d.target) ? 'good' : left < 30 ? 'bad' : 'warn';
+  return `<div class="fbar st-${st}" role="img" aria-label="${money(d.total)} of ${money(d.target)} raised, ${ST_LABEL[st].toLowerCase()}"><div class="fill" style="width:${pct}%"></div>${minPct && minPct < 100 ? `<i class="tick" style="left:${minPct}%"></i>` : ''}</div>
     <div class="fbar-l"><span>${Math.floor((d.total / (d.target || top)) * 100)}% of ${money(d.target)}</span>${d.minimum ? `<span>${d.total >= d.minimum ? '✓ ' + money(d.minimum) + ' minimum met' : money(d.minimum - d.total) + ' to ' + money(d.minimum) + ' minimum'}</span>` : ''}</div>`;
 }
 function fundCard() {
@@ -735,15 +737,29 @@ function recommendations(weeks, ci) {
   return head.concat(R.sort((a, b) => order[a.lvl] - order[b.lvl]));
 }
 
+/* ---------- progress status: green = on track, yellow = a bit behind, red = behind ---------- */
+const PHASE_HUE = { Base: 'h-blue', Build: 'h-orange', Peak: 'h-magenta', Taper: 'h-aqua', Race: 'h-red', Return: 'h-green', Injury: 'h-violet' };
+const ST_VAR = { good: 'var(--good)', warn: 'var(--warning)', bad: 'var(--critical)' };
+const ST_LABEL = { good: 'On track', warn: 'A bit behind', bad: 'Behind' };
+function weekStatus(w) {
+  if (!w.started || !w.planMi) return null;
+  const r = w.mi / w.planMi;
+  if (w.past) return r >= 0.9 ? 'good' : r >= 0.7 ? 'warn' : 'bad';
+  const t = Math.min(1, (daysBetween(w.start, TODAY) + 1) / 7);   // share of the week gone
+  return r >= t - 0.3 ? 'good' : r >= t - 0.55 ? 'warn' : 'bad';
+}
+const cumStatus = (act, plan) => { if (!plan) return null; const p = (act - plan) / plan; return p >= -0.05 && p <= 0.15 ? 'good' : p >= -0.15 && p <= 0.3 ? 'warn' : 'bad'; };
+const predStatus = (predSec, goalSec) => (predSec == null ? null : predSec <= goalSec ? 'good' : predSec <= goalSec + 600 ? 'warn' : 'bad');
+
 /* ---------- views ---------- */
 const LVL = { good: 'On track', warning: 'Heads up', serious: 'Attention', critical: 'Warning', info: 'Coach' };
-const recCard = r => `<div class="card rec"><div class="ic ${r.lvl}" aria-hidden="true">${esc(r.icon)}</div><div><div class="lvl">${LVL[r.lvl]}</div><div class="t">${esc(r.t)}</div><div class="b">${esc(r.b)}</div></div></div>`;
+const recCard = r => `<div class="card rec lvl-${r.lvl}"><div class="ic ${r.lvl}" aria-hidden="true">${esc(r.icon)}</div><div><div class="lvl">${LVL[r.lvl]}</div><div class="t">${esc(r.t)}</div><div class="b">${esc(r.b)}</div></div></div>`;
 
-function ring(val, max, size = 92) {
+function ring(val, max, size = 92, st = null) {
   const r = size / 2 - 7, c = 2 * Math.PI * r, p = Math.min(1, max ? val / max : 0);
   return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${mi1(val)} of ${max} miles">
     <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="9"/>
-    ${p > 0 ? `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${p >= 1 ? 'var(--good)' : 'var(--series-1)'}" stroke-width="9" stroke-linecap="round"
+    ${p > 0 ? `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${st ? ST_VAR[st] : p >= 1 ? 'var(--good)' : 'var(--series-1)'}" stroke-width="9" stroke-linecap="round"
       stroke-dasharray="${c * p} ${c}" transform="rotate(-90 ${size / 2} ${size / 2})"/>` : ''}
     <text x="50%" y="47%" text-anchor="middle" font-size="19" font-weight="700" fill="var(--text)">${mi1(val)}</text>
     <text x="50%" y="64%" text-anchor="middle" font-size="11" fill="var(--muted)">of ${max} mi</text></svg>`;
@@ -755,7 +771,8 @@ const runRow = r => {
     : ['Cross-train · ' + (XT_LABEL[r.type] || r.type), r.sec ? fmtDur(r.sec) : '', r.hr ? `♥ ${Math.round(r.hr)}` : '', r.effort ? `effort ${r.effort}/10` : ''];
   const right = r.isRun ? `${mi1(r.miles)}<small>mi</small>` : r.sec ? `${Math.round(r.sec / 60)}<small>min</small>` : `✓<small>done</small>`;
   const src = r.source === 'strava' ? ' <span class="src">Strava</span>' : '';
-  return `<div class="run${r.wid ? ' tappable' : ''}"${r.wid ? ` data-wid="${esc(r.wid)}"` : ''}><div class="date"><b>${d.getDate()}</b><span>${MON[d.getMonth()]}</span></div>
+  const tcls = r.isRun ? 't-run' : /F45|^Workout$/.test(r.type) ? 't-f45' : /Strength|Weight/.test(r.type) ? 't-strength' : 't-hiit';
+  return `<div class="run ${tcls}${r.wid ? ' tappable' : ''}"${r.wid ? ` data-wid="${esc(r.wid)}"` : ''}><div class="date"><b>${d.getDate()}</b><span>${MON[d.getMonth()]}</span></div>
     <div class="grow"><div class="nm">${esc(r.name)}${src}</div><div class="meta">${esc(meta.filter(Boolean).join(' · '))}</div>${r.notes ? `<div class="notes">${esc(r.notes)}</div>` : ''}</div>
     <div class="mi">${right}</div></div>`;
 };
@@ -778,6 +795,7 @@ function viewToday() {
   const pred = predictAt(TODAY);
   const done = weeks.filter(x => x.past);
   const cumDiff = done.length ? sum(done, x => x.mi) - sum(done, x => x.planMi) : 0;
+  const wst = weekStatus(w);
   const sessions = w.sessions.map(s => `<div class="session">
       <div class="check ${s.done ? 'done' : ''}">${s.done ? '✓' : ''}</div>
       <div><div class="t">${esc(s.label)}</div><div class="d">${s.done ? `${fmtDate(s.run.date)} · ${mi1(s.run.miles)} mi @ ${fmtPace(s.run.sec / s.run.miles)}/mi` : esc(s.notes && !/^easy$/i.test(s.notes) ? s.notes : (s.kind === 'quick' ? `~${fmtPace(P.quickPace)}/mi` : `~${fmtPace(s.kind === 'race' ? P.goalPace : P.easyPace)}/mi`))}</div></div>
@@ -786,14 +804,15 @@ function viewToday() {
   const recs = recommendations(weeks, ci).map(recCard).join('');
   const recent = activities().slice(0, 4).map(runRow).join('');
   return `
-  <div class="card hero">${ring(w.mi, w.planMi)}
+  <div class="card hero">${ring(w.mi, w.planMi, 92, wst)}
     <div><div class="hero-num">${dtr >= 0 ? dtr : 0}<span style="font-size:16px;font-weight:600;color:var(--text-2)"> days</span></div>
     <div class="hero-sub">to ${esc(P.name)} · ${fmtDate(P.date)}</div>
-    <div style="margin-top:8px"><span class="pill phase">Week ${w.wk} · ${esc(w.phase)}</span> <span class="pill">${fmtDate(w.start)}–${fmtDate(addDays(w.start, 6))}</span></div></div></div>
+    <div style="margin-top:8px"><span class="pill phase">Week ${w.wk} · ${esc(w.phase)}</span> <span class="pill">${fmtDate(w.start)}–${fmtDate(addDays(w.start, 6))}</span></div>
+    ${wst ? `<div class="${'st-' + wst}" style="margin-top:8px;font-size:13px"><span class="status-dot"></span><span class="status-txt">${ST_LABEL[wst]}</span> <span class="muted">this week</span></div>` : ''}</div></div>
   <div class="stats">
     <div class="stat"><div class="k">Goal</div><div class="v">${fmtHM(P.goalSec)}</div><div class="s">${fmtPace(P.goalPace)}/mi</div></div>
-    <div class="stat"><div class="k">Predicted</div><div class="v">${pred ? fmtHM(pred.sec) : '–'}</div><div class="s">${pred ? fmtPace(pred.sec / P.distance) + '/mi' : 'need 4+ mi run'}</div></div>
-    <div class="stat"><div class="k">vs plan</div><div class="v">${cumDiff >= 0 ? '+' : ''}${Math.round(cumDiff)} mi</div><div class="s">${done.length} wks done</div></div>
+    <div class="stat ${pred ? 'st-' + predStatus(pred.sec, P.goalSec) : ''}"><div class="k">Predicted</div><div class="v">${pred ? fmtHM(pred.sec) : '–'}</div><div class="s">${pred ? fmtPace(pred.sec / P.distance) + '/mi' : 'need 4+ mi run'}</div></div>
+    <div class="stat ${done.length ? 'st-' + cumStatus(sum(done, x => x.mi), sum(done, x => x.planMi)) : ''}"><div class="k">vs plan</div><div class="v">${cumDiff >= 0 ? '+' : ''}${Math.round(cumDiff)} mi</div><div class="s">${done.length} wks done</div></div>
   </div>
   ${fundCard()}
   <h2 class="h2-row">This week <button class="chip-btn" data-act="edit-week" data-i="${ci}">Edit</button></h2><div class="card tight">${sessions}${extra}${xtRow(w)}</div>
@@ -806,7 +825,8 @@ function viewPlan() {
   const weeks = weekStats(), ci = currentWeekIndex(weeks);
   let lastPhase = null;
   const rows = weeks.map(w => {
-    const head = w.phase !== lastPhase ? `${lastPhase === null ? '' : '</div>'}<h2>${esc(w.phase)}</h2><div class="card list">` : ''; lastPhase = w.phase;
+    const head = w.phase !== lastPhase ? `${lastPhase === null ? '' : '</div>'}<h2 class="phase-h ${PHASE_HUE[w.phase] || 'h-blue'}">${esc(w.phase)}</h2><div class="card list">` : ''; lastPhase = w.phase;
+    const st = weekStatus(w);
     const pct = w.planMi ? Math.min(100, w.mi / w.planMi * 100) : 0;
     const det = w.sessions.map(s => `<div>${s.done ? '✓' : '○'} ${esc(s.label)}${s.notes && s.kind === 'long' && !/^easy$/i.test(s.notes) ? ' · ' + esc(s.notes) : ''}${s.done ? ` <span class="ok">(${mi1(s.run.miles)} mi)</span>` : ''}</div>`).join('')
       + (w.xtTarget || w.xt ? `<div>${w.xt >= w.xtTarget ? '✓' : '○'} Cross-train ${w.xt}/${w.xtTarget}${w.xtActs.length ? ' · ' + w.xtActs.map(a => `${DOW[parseISO(a.date).getDay()]} ${XT_LABEL[a.type] || a.type}`).join(', ') : ''}</div>` : '')
@@ -815,8 +835,8 @@ function viewPlan() {
     return head + `<div class="week ${w.i === ci ? 'current' : ''}" data-week="${w.i}">
       <div class="wn">W${w.wk}</div>
       <div><div>${esc(w.run1 || '—')} · ${esc((w.run2 || '—').replace(/\s*[–—-]\s*shorter, quicker.*$/i, ' quick'))}${w.phase === 'Race' ? ' · <b>RACE</b>' : w.longMi ? ' · <b>Long ' + w.longMi + '</b>' : ''}</div>
-        <div class="wd">${fmtDate(w.start)}${w.i === ci ? ' · this week' : ''}</div>${w.started ? `<div class="bar"><div style="width:${pct}%"></div></div>` : ''}</div>
-      <div class="mi">${w.started ? mi1(w.mi) : '–'}<small>of ${w.planMi}</small></div></div>
+        <div class="wd">${fmtDate(w.start)}${w.i === ci ? ' · this week' : ''}</div>${w.started ? `<div class="bar"><div style="width:${pct}%;background:${st ? ST_VAR[st] : 'var(--series-1)'}"></div></div>` : ''}</div>
+      <div class="mi ${st ? 'st-' + st : ''}">${w.started ? `<span ${st ? 'class="status-txt"' : ''}>${mi1(w.mi)}</span>` : '–'}<small>of ${w.planMi}</small></div></div>
       <div class="week-detail" id="wd-${w.i}">${det}</div>`;
   }).join('');
   return rows + '</div>';
@@ -887,7 +907,7 @@ function viewCharts() {
   const hasHR = runs().some(r => r.hr);
   const card = (id, title, sub, legend) => `<div class="card chart-card"><h3>${title}</h3><div class="sub">${sub}</div>${legend ? `<div class="legend">${legend}</div>` : ''}<div class="chart-wrap"><canvas id="${id}" role="img" aria-label="${esc(title)}"></canvas></div></div>`;
   const L = (cls, color, label) => `<span><i class="${cls}" style="background:${color}"></i>${label}</span>`;
-  return card('c-weekly', 'Weekly mileage', 'Actual miles vs plan, all 30 weeks', L('', 'var(--series-1)', 'Actual') + L('dash', 'var(--plan)', 'Plan'))
+  return card('c-weekly', 'Weekly mileage', 'Actual miles vs plan, colored by how each week went', L('', 'var(--good)', 'On track') + L('', 'var(--warning)', 'A bit behind') + L('', 'var(--critical)', 'Behind') + L('dash', 'var(--plan)', 'Plan'))
     + card('c-cum', 'Cumulative miles', 'Are you banking the miles?', L('', 'var(--series-1)', 'Actual') + L('dash', 'var(--plan)', 'Plan'))
     + card('c-pace', 'Pace per run', 'Higher is faster', L('dot', 'var(--series-1)', 'Run') + L('', 'var(--series-2)', 'Goal pace') + L('', 'var(--series-3)', 'Easy pace'))
     + card('c-long', 'Long run progression', 'Longest run each week vs the planned long run', L('', 'var(--series-1)', 'Longest actual') + L('dash', 'var(--plan)', 'Planned long'))
@@ -910,12 +930,13 @@ function drawCharts() {
   const merge = (o) => { const b = structuredClone(base); return Object.assign(b, o, { plugins: { ...b.plugins, ...(o.plugins || {}), tooltip: { ...b.plugins.tooltip, ...((o.plugins || {}).tooltip || {}) } }, scales: { x: { ...b.scales.x, ...((o.scales || {}).x || {}) }, y: { ...b.scales.y, ...((o.scales || {}).y || {}) } } }); };
   const mk = (id, cfg) => { const el = document.getElementById(id); if (el) S.charts.push(new Chart(el, cfg)); };
   const labels = weeks.map(w => 'W' + w.wk);
+  const SC = { good: v('--good'), warn: v('--warning'), bad: v('--critical') };
   const wkTitle = items => { const w = weeks[items[0].dataIndex]; return `Week ${w.wk} · ${fmtDate(w.start)} · ${w.phase}`; };
 
   mk('c-weekly', { data: { labels, datasets: [
-    { type: 'bar', label: 'Actual', data: weeks.map(w => w.started ? +mi1(w.mi) : null), backgroundColor: weeks.map(w => w.i === ci ? C.s1 + 'aa' : C.s1), borderRadius: 4, borderSkipped: 'start', barPercentage: 0.75, categoryPercentage: 0.9 },
+    { type: 'bar', label: 'Actual', data: weeks.map(w => w.started ? +mi1(w.mi) : null), backgroundColor: weeks.map(w => { const st = weekStatus(w); return st ? SC[st] : C.s1; }), borderRadius: 4, borderSkipped: 'start', barPercentage: 0.75, categoryPercentage: 0.9 },
     { type: 'line', label: 'Plan', data: weeks.map(w => w.planMi), borderColor: C.plan, borderDash: [4, 3], borderWidth: 2, pointRadius: 0, stepped: 'middle', pointHitRadius: 10 },
-  ] }, options: merge({ interaction: { mode: 'index', intersect: false }, plugins: { tooltip: { callbacks: { title: wkTitle, label: c => ` ${c.dataset.label}: ${c.raw ?? '–'} mi` } } }, scales: { x: { ticks: { autoSkip: true, maxTicksLimit: 8, maxRotation: 0 } } } }) });
+  ] }, options: merge({ interaction: { mode: 'index', intersect: false }, plugins: { tooltip: { callbacks: { title: wkTitle, label: c => ` ${c.dataset.label}: ${c.raw ?? '–'} mi`, afterBody: i => { const st = weekStatus(weeks[i[0].dataIndex]); return st ? ST_LABEL[st] : ''; } } } }, scales: { x: { ticks: { autoSkip: true, maxTicksLimit: 8, maxRotation: 0 } } } }) });
 
   mk('c-cum', { type: 'line', data: { labels, datasets: [
     { label: 'Actual', data: weeks.map(w => w.cumAct != null ? +w.cumAct.toFixed(1) : null), borderColor: C.s1, backgroundColor: C.s1 + '22', fill: true, borderWidth: 2, pointRadius: 0, pointHoverRadius: 5, tension: 0.2 },

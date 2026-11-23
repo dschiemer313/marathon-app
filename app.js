@@ -1,5 +1,6 @@
 /* Marathon Trainer — single-file app logic (no build step). */
 'use strict';
+const APP_VERSION = '2026-11-23.4';   // bump with each upload; shown in Settings
 
 /* ---------- storage ---------- */
 const load = (k, d = null) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
@@ -1090,7 +1091,7 @@ function viewSettings() {
     ${P ? '<div class="note" style="margin-top:8px">Re-importing replaces the plan and the imported history. Workouts you logged in the app are kept.</div>' : ''}</div>
 
   <button class="btn danger" data-act="reset" style="margin-top:20px">Erase everything on this device</button>
-  <p class="note" style="text-align:center;margin-top:16px">Today: ${fmtDate(TODAY)}, ${parseISO(TODAY).getFullYear()}</p>`;
+  <p class="note" style="text-align:center;margin-top:16px">Today: ${fmtDate(TODAY)}, ${parseISO(TODAY).getFullYear()} · app version ${APP_VERSION}</p>`;
 }
 
 /* ---------- charts ---------- */
@@ -1308,4 +1309,14 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => ['
   if (stravaConnected() && (needRoutes || !S.lastSync || Date.now() - S.lastSync > 30 * 60e3)) sync(false);
 })();
 
-if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  // Check for a new version on every open (and whenever the app comes back to the foreground),
+  // and reload once as soon as a new version takes over, so updates show up without fiddling.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+}

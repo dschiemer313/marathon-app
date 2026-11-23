@@ -43,6 +43,12 @@ In **Settings → Fundraising**, paste your GivenGain page link. The Today scree
 
 Tap the card for the **Fundraising** screen: a raised-over-time chart, days left, and every donor and message, each with a thank-you checkbox.
 
+**Donor miles** (Fundraising → Donor miles): dedicate each of the 27 Boston miles, and any training long run, to a donor. You can pick donors by hand or auto-fill in one of three ways: biggest gifts get the biggest miles, in the order people gave, or a random draw.
+- **Share the miles board**: a story-sized image of all 27 miles showing who has each one and which are still OPEN. It copies a caption with your donation link.
+- **Share** on any mile gives you two options: a shout-out image for social media, or a private thank-you message.
+- Images use first name + last initial unless you switch on full names.
+- Dedications also show in the race plan and on the run's mile splits.
+
 GivenGain doesn't let other websites read its data directly, so the Google Apps Script link fetches the public totals and donor list for the app (cached for 10 minutes). Data refreshes when you open the app (at most every 30 minutes) and when you tap *refresh* on the Fundraising screen.
 
 ## Strava API app (already created)

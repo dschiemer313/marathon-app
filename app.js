@@ -18,6 +18,7 @@ const S = {
   charts: [],
   det: load('mt.det', {}),   // Strava mile splits per activity (ghost runner)
   mapMode: 'map', mapFilter: 'all', map: null,
+  ded: Object.assign({ race: {}, train: {} }, load('mt.ded', {})),   // donor miles
 };
 
 /* ---------- date + format helpers ---------- */
@@ -417,7 +418,7 @@ function viewRace() {
       <div class="sm">${s.mile === 26.2 ? '26.2' : s.mile}</div>
       <div class="sp"><b>${fmtPace(s.pace)}</b><span class="pbar"><i style="width:${(((s.pace - fast) / ((slow - fast) || 1)) * 70 + 30).toFixed(0)}%" class="${tag}"></i></span></div>
       <div class="se">${fmtDur(s.elapsed)}</div>
-      <div class="sn">${s.gel ? '<span class="gel">gel</span> ' : ''}${esc(mk.join(' · '))}</div></div>`;
+      <div class="sn">${s.gel ? '<span class="gel">gel</span> ' : ''}${esc(mk.join(' · '))}${S.ded.race[String(s.mile)]?.name ? `<span class="for">for ${esc(S.ded.race[String(s.mile)].name)}</span>` : ''}</div></div>`;
   }).join('');
   return `<div class="race-head card">
       <div class="k">Boston plan for</div><div class="hero-num">${fmtDur(P.goalSec)}</div>
@@ -442,7 +443,8 @@ function viewRace() {
     ${BOS_SECTIONS.map(([a, b, t, d]) => `<div class="card tight sect"><div class="sect-h"><b>${t}</b><span class="muted">mi ${a}–${b}</span></div><div class="note">${d}</div>
       <div class="note"><b>${fmtPace(segs.filter(s => s.from >= a && s.from < b).reduce((q, s) => q + s.sec, 0) / Math.max(0.1, b - a))}/mi</b> average for this stretch</div></div>`).join('')}
 
-    <h2>Checkpoints <span class="muted" style="text-transform:none;letter-spacing:0">· wristband</span></h2>
+    ${milesCard()}
+    <h2>Checkpoints </h2>
     <div class="card tight k5">${k5.map(([d, l]) => `<div><span>${l}</span><b>${fmtDur(elapsedAt(segs, d))}</b></div>`).join('')}</div>
 
     <h2>Mile by mile</h2>
@@ -462,7 +464,7 @@ function initRaceProfile() {
     cur.querySelector('circle').setAttribute('cx', X); cur.querySelector('circle').setAttribute('cy', y(e));
     const near = BOS_MARKS.filter(m => m[0] >= mi - 0.01).sort((a, b) => a[0] - b[0])[0];
     det.innerHTML = `<div><span class="muted">Mile</span> <b>${mi.toFixed(1)}</b></div><div><span class="muted">Pace</span> <b>${fmtPace(s.pace)}</b></div>
-      <div><span class="muted">Clock</span> <b>${fmtDur(elapsedAt(segs, mi))}</b></div><div class="wide">${near ? `Next: ${esc(near[1])}${near[0] - mi > 0.05 ? ` in ${(near[0] - mi).toFixed(1)} mi` : ''}` : ''}${s.gel ? ' · <span class="gel">gel this mile</span>' : ''} · ${Math.round(e)} ft</div>`;
+      <div><span class="muted">Clock</span> <b>${fmtDur(elapsedAt(segs, mi))}</b></div>${S.ded.race[String(s.mile)]?.name ? `<div class="wide for">Mile ${s.mile} is for <b>${esc(S.ded.race[String(s.mile)].name)}</b></div>` : ''}<div class="wide">${near ? `Next: ${esc(near[1])}${near[0] - mi > 0.05 ? ` in ${(near[0] - mi).toFixed(1)} mi` : ''}` : ''}${s.gel ? ' · <span class="gel">gel this mile</span>' : ''} · ${Math.round(e)} ft</div>`;
     document.querySelectorAll('.split.sel').forEach(r => r.classList.remove('sel'));
     document.querySelector(`.split[data-mile="${s.from}"]`)?.classList.add('sel');
   };
@@ -488,14 +490,14 @@ async function loadFund(manual) {
     const before = S.fund.data?.donations?.length;
     S.fund = { ...S.fund, data: j, at: Date.now() }; save('mt.fund', S.fund);
     const added = before != null ? j.donations.length - before : 0;
-    if (manual || added > 0) toast(added > 0 ? `🎉 ${added} new donation${added > 1 ? 's' : ''}! ${money(j.total)} raised` : `Donations updated: ${money(j.total)} raised`, 4000);
+    if (manual || added > 0) toast(added > 0 ? `🎉 ${added} new donation${added > 1 ? 's' : ''}! ${money(j.total)} raised${openMiles() ? '. Give them a mile in Donor miles' : ''}` : `Donations updated: ${money(j.total)} raised`, 4000);
     render();
   } catch (e) { console.error(e); if (manual) toast(e.message, 6000); }
 }
 function shareFund() {
   const url = S.fund?.url; if (!url) return;
   const d = S.fund.data;
-  const text = d ? `I'm running the 2027 Boston Marathon for the Boys & Girls Club of Lawrence. ${money(d.total)} raised so far. Help me reach ${money(d.target)}!` : 'Support my Boston Marathon fundraiser';
+  const text = d ? `I'm running the 2027 Boston Marathon for the Boys & Girls Club of Lawrence. ${money(d.total)} raised so far. Help me reach ${money(d.target)}!${openMilesLine()}` : 'Support my Boston Marathon fundraiser';
   if (navigator.share) navigator.share({ title: d?.title || 'My Boston Marathon fundraiser', text, url }).catch(() => {});
   else { navigator.clipboard?.writeText(url); toast('Link copied'); }
 }
@@ -529,7 +531,7 @@ function viewFund() {
     const anon = x.donor === 'Anonymous', done = !!S.thanks[x.id];
     return `<div class="run donor">
       ${anon ? '<div class="check" style="opacity:.35" title="Anonymous">–</div>' : `<button class="check${done ? ' done' : ''}" data-thank="${esc(x.id)}" aria-label="${done ? 'Thanked' : 'Mark as thanked'}">${done ? '✓' : ''}</button>`}
-      <div class="grow"><div class="nm">${esc(x.donor)}${x.offPlatform ? ' <span class="src" style="color:var(--muted)">offline</span>' : ''}</div>
+      <div class="grow"><div class="nm">${esc(x.donor)}${anon ? '' : mileBadge(x.donor)}${x.offPlatform ? ' <span class="src" style="color:var(--muted)">offline</span>' : ''}</div>
         <div class="meta">${fmtDate(x.date.slice(0, 10))}</div>${x.message ? `<div class="notes">“${esc(x.message)}”</div>` : ''}</div>
       <div class="mi">${money(x.amount)}</div></div>`;
   }).join('');
@@ -542,6 +544,7 @@ function viewFund() {
   <div class="card chart-card" style="margin-top:12px"><h3>Raised over time</h3><div class="sub">Running total vs your target</div>
     <div class="legend"><span><i style="background:var(--series-1)"></i>Raised</span><span><i style="background:var(--series-2)"></i>Target</span>${d.minimum ? '<span><i style="background:var(--series-3)"></i>Minimum</span>' : ''}</div>
     <div class="chart-wrap" style="height:200px"><canvas id="c-fund" role="img" aria-label="Running total raised over time"></canvas></div></div>
+  ${milesCard()}
   <div class="row2 even" style="margin:12px 0"><button class="btn" data-act="share-fund" style="margin:0">Share my page</button><a class="btn secondary" href="${esc(f.url)}" target="_blank" rel="noopener" style="margin:0;text-decoration:none">Open GivenGain</a></div>
   <h2>Donors <span class="muted" style="text-transform:none;letter-spacing:0">· tap ○ once you've said thanks</span></h2>
   <div class="card list">${rows}</div>
@@ -577,7 +580,7 @@ function drawFundChart() {
 
 /* ---------- backup ---------- */
 function exportBackup() {
-  const data = { app: 'marathon-trainer', version: 2, exportedAt: new Date().toISOString(), plan: S.plan, workouts: S.workouts, fund: S.fund ? { url: S.fund.url, id: S.fund.id } : null, thanks: S.thanks };
+  const data = { app: 'marathon-trainer', version: 2, exportedAt: new Date().toISOString(), plan: S.plan, workouts: S.workouts, fund: S.fund ? { url: S.fund.url, id: S.fund.id } : null, thanks: S.thanks, ded: S.ded };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const file = new File([blob], `marathon-backup-${TODAY}.json`, { type: 'application/json' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Marathon backup' }).catch(() => {}); return; }
@@ -591,7 +594,7 @@ function restoreBackup() {
       if (d.app !== 'marathon-trainer' || !d.plan || !Array.isArray(d.workouts)) throw new Error('That isn\'t a Marathon backup file');
       if (!confirm(`Restore the backup from ${new Date(d.exportedAt).toLocaleDateString()}? It replaces your current plan and workouts.`)) return;
       S.plan = d.plan; save('mt.plan', S.plan); setWorkouts(d.workouts);
-      if (d.fund) { S.fund = d.fund; save('mt.fund', S.fund); } if (d.thanks) { S.thanks = d.thanks; save('mt.thanks', S.thanks); } toast(`Restored ${d.workouts.length} workouts`); render();
+      if (d.fund) { S.fund = d.fund; save('mt.fund', S.fund); } if (d.thanks) { S.thanks = d.thanks; save('mt.thanks', S.thanks); } if (d.ded) { S.ded = d.ded; save('mt.ded', S.ded); } toast(`Restored ${d.workouts.length} workouts`); render();
     } catch (e) { toast('Restore failed: ' + e.message, 5000); }
   };
   inp.click();
@@ -1171,13 +1174,13 @@ function drawCharts() {
 }
 
 /* ---------- render + events ---------- */
-const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising', race: 'Race plan', journey: 'Virtual Boston', routes: 'Route map', bloom: 'Training bloom' };
+const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising', race: 'Race plan', journey: 'Virtual Boston', routes: 'Route map', bloom: 'Training bloom', miles: 'Donor miles' };
 function render() {
   const view = document.getElementById('view');
   document.getElementById('hdr-title').textContent = TITLES[S.tab];
   document.getElementById('hdr-eyebrow').textContent = S.plan ? `${S.plan.race.name} · ${fmtHM(S.plan.race.goalSec)} goal` : 'Marathon Trainer';
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === S.tab));
-  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund, race: viewRace, journey: viewJourney, routes: viewRoutes, bloom: viewBloom }[S.tab];
+  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund, race: viewRace, journey: viewJourney, routes: viewRoutes, bloom: viewBloom, miles: viewMiles }[S.tab];
   if (S.map) { S.map.remove(); S.map = null; }
   view.innerHTML = fn();
   if (S.tab === 'plan') view.querySelector('.week.current')?.scrollIntoView({ block: 'center' });
@@ -1192,6 +1195,10 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 document.getElementById('log-btn').addEventListener('click', () => editWorkout());
 document.getElementById('view').addEventListener('click', async e => {
   const hd = e.target.closest('[data-day]'); if (hd) { showHeatDay(hd.dataset.day); return; }
+  const ds = e.target.closest('[data-dslot]'); if (ds) { editRaceMile(ds.dataset.dslot); return; }
+  const dt = e.target.closest('[data-dtrain]'); if (dt) { editTrainRun(dt.dataset.dtrain); return; }
+  const dk = e.target.closest('[data-dtold]'); if (dk) { const [kind, key] = dk.dataset.dtold.split(':'), r = kind === 'race' ? S.ded.race[key] : S.ded.train[key]; if (r) { r.told = !r.told; save('mt.ded', S.ded); render(); } return; }
+  const dsn = e.target.closest('[data-dsend]'); if (dsn) { const [kind, key] = dsn.dataset.dsend.split(':'); shareChoices(kind, key); return; }
   const pe = e.target.closest('[data-bloom]'); if (pe) { showBloomRun(pe.dataset.bloom); return; }
   const sr = e.target.closest('[data-sid]'); if (sr) { openRun(sr.dataset.sid); return; }
   const mm = e.target.closest('[data-mapmode]'); if (mm) { S.mapMode = mm.dataset.mapmode; render(); return; }
@@ -1209,7 +1216,11 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'goto-fund') { S.tab = 'fund'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-race') { S.tab = 'race'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-today') { S.tab = 'today'; render(); window.scrollTo(0, 0); }
-  else if (/^goto-(journey|routes|bloom)$/.test(act)) { S.tab = act.slice(5); render(); window.scrollTo(0, 0); }
+  else if (act === 'ded-fill') autoFill(a.dataset.mode);
+  else if (act === 'ded-clear') { if (confirm('Clear every race-mile dedication?')) { S.ded.race = {}; save('mt.ded', S.ded); render(); } }
+  else if (act === 'ded-board') { a.disabled = true; try { await shareBoard(); } catch (err) { console.error(err); toast('Could not make the image'); } a.disabled = false; }
+  else if (act === 'ded-fullnames') { S.ded.fullNames = a.checked; save('mt.ded', S.ded); render(); }
+  else if (/^goto-(journey|routes|bloom|miles)$/.test(act)) { S.tab = act.slice(5); render(); window.scrollTo(0, 0); }
   else if (act === 'bloom-save') { a.disabled = true; try { await saveBloom(); } catch (err) { toast('Could not make the image'); } a.disabled = false; }
   else if (act === 'share-fund') { e.stopPropagation(); shareFund(); }
   else if (act === 'fund-refresh') { e.preventDefault(); loadFund(true); }
@@ -1229,7 +1240,7 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'sync') sync(true);
   else if (act === 'disconnect') { if (confirm('Disconnect Strava? Synced activities will be removed from this phone.')) { S.strava = { clientId: S.strava.clientId, clientSecret: S.strava.clientSecret }; S.acts = []; save('mt.strava', S.strava); save('mt.acts', []); render(); } }
   else if (act === 'export') exportBackup();
-  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet', 'mt.fund', 'mt.thanks', 'mt.det'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
+  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet', 'mt.fund', 'mt.thanks', 'mt.det', 'mt.ded'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => ['charts', 'routes', 'bloom'].includes(S.tab) && render());
 

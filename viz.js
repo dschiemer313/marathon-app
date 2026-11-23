@@ -370,6 +370,7 @@ function ghostHTML(a, det, kind) {
     const g = ghostPace(kind, i) * s.d; you += s.t; ghost += g;
     return { i, s, pace: s.t / s.d, gp: g / s.d, diff: g - s.t, gap: ghost - you };   // diff > 0 = you were faster
   });
+  const dedKey = typeof trainKeyForRun === 'function' ? trainKeyForRun(a) : null;
   const gap = ghost - you, maxD = Math.max(15, ...rows.map(r => Math.abs(r.diff)));
   const fmtGap = v => `${v >= 0 ? '' : '−'}${fmtDur(Math.abs(v))}`;
   // race strip: where the ghost was when you finished (or you when it finished)
@@ -394,9 +395,9 @@ function ghostHTML(a, det, kind) {
       ${rows.map((r, i) => `<circle cx="${xs(i + 1).toFixed(1)}" cy="${yg(r.gap).toFixed(1)}" r="4" fill="${r.gap >= 0 ? 'var(--series-1)' : 'var(--series-2)'}" stroke="var(--surface)" stroke-width="1.5"/>`).join('')}
       <text x="${pad - 6}" y="${yg(maxG) + 4}" text-anchor="end" class="gc-t">+${fmtDur(maxG)}</text><text x="${pad - 6}" y="${yg(-maxG) + 4}" text-anchor="end" class="gc-t">−${fmtDur(maxG)}</text>
     </svg>` : ''}
-    <div class="gsplits">${rows.map(r => `<div class="gs"><span class="gm">${r.s.d < 0.95 ? mi1(r.s.d) : r.i + 1}</span><b>${fmtPace(r.pace)}</b>
+    <div class="gsplits">${rows.map(r => { const nm = dedKey ? trainMileName(dedKey, r.i, a.miles) : '', prev = dedKey && r.i ? trainMileName(dedKey, r.i - 1, a.miles) : ''; return (nm && nm !== prev ? `<div class="gfor">Miles for <b>${esc(nm)}</b></div>` : '') + `<div class="gs"><span class="gm">${r.s.d < 0.95 ? mi1(r.s.d) : r.i + 1}</span><b>${fmtPace(r.pace)}</b>
         <span class="gbar"><i class="${r.diff >= 0 ? 'up' : 'dn'}" style="width:${(Math.abs(r.diff) / maxD * 50).toFixed(1)}%"></i></span>
-        <span class="gd ${r.diff >= 0 ? 'up' : 'dn'}">${r.diff >= 0 ? '−' : '+'}${Math.abs(Math.round(r.diff / r.s.d))}s</span></div>`).join('')}</div>
+        <span class="gd ${r.diff >= 0 ? 'up' : 'dn'}">${r.diff >= 0 ? '−' : '+'}${Math.abs(Math.round(r.diff / r.s.d))}s</span></div>`; }).join('')}</div>
     <div class="note" style="margin-top:6px">Per mile: <span class="gd up">−s</span> = faster than the ghost, <span class="gd dn">+s</span> = slower.${det ? '' : ' Mile splits will show once Strava details load.'} Final gap ${fmtGap(gap)}.</div>`;
 }
 async function openRun(id) {

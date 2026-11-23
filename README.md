@@ -35,6 +35,16 @@ No personal data is stored in this repo. Your plan, workouts, sheet link, and St
 
 **If Strava sends you back to Safari instead of the app:** the page shows a code with a **Copy code** button. Open the Marathon app, go to **Settings → Strava → "Connected in Safari but the app didn't pick it up?"**, paste the code, and tap **Use code** within a few minutes.
 
+## Fundraising tracker (GivenGain)
+
+In **Settings → Fundraising**, paste your GivenGain page link. The Today screen then shows:
+- your total raised vs target, with the $20,000 minimum marked
+- the latest donor, plus a **Share** button
+
+Tap the card for the **Fundraising** screen: a raised-over-time chart, days left, and every donor and message, each with a thank-you checkbox.
+
+GivenGain doesn't let other websites read its data directly, so the Google Apps Script link fetches the public totals and donor list for the app (cached for 10 minutes). Data refreshes when you open the app (at most every 30 minutes) and when you tap *refresh* on the Fundraising screen.
+
 ## Strava API app (already created)
 
 "Marathon Trainer" at **strava.com/settings/api**: Client ID `300161`, Website `https://dschiemer313.github.io/marathon-app/`, Authorization Callback Domain `dschiemer313.github.io`. Since June 2026, Strava's API requires an active Strava subscription.

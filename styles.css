@@ -180,6 +180,17 @@ textarea { resize: vertical; }
 .pace-line { font-size: 14px; color: var(--text-2); margin-top: 8px; min-height: 1em; }
 .effort { width: 100%; accent-color: var(--accent); margin: 6px 0 0; }
 .effort-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.fund-card.tappable { cursor: pointer; }
+.fund-card .t { font-weight: 650; }
+.fund-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.chev { font-size: 28px; color: var(--muted); line-height: 1; }
+.fbar { position: relative; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: visible; }
+.fbar .fill { height: 100%; border-radius: 5px; background: var(--series-1); }
+.fbar .fill.met { background: var(--good); }
+.fbar .tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-2); border-radius: 1px; }
+.fbar-l { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.donor .check { background: transparent; padding: 0; cursor: pointer; font-size: 14px; }
+.donor .check.done { background: var(--good); color: #fff; }
 .h2-row { display: flex; align-items: center; justify-content: space-between; }
 .chip-btn { border: 1px solid var(--border); background: var(--surface-2); color: var(--accent); font-size: 12px; font-weight: 650; padding: 5px 12px; border-radius: 999px; cursor: pointer; text-transform: none; letter-spacing: 0; }
 .week-detail .chip-btn { margin-top: 8px; }

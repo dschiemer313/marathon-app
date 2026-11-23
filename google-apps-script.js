@@ -33,7 +33,12 @@ function doPost(e) {
 function handle_(params, body) {
   const key = (body && body.key) || params.key;
   if (key !== KEY) return out_({ ok: false, error: 'Wrong key: check the part after # in your link' });
-  const ss = SHEET_ID ? SpreadsheetApp.openById(SHEET_ID) : SpreadsheetApp.getActive();
+  const action = (body && body.action) || params.action;
+  if (action === 'donations') {
+    try { return out_(donations_(String((body && body.project) || params.project || ''))); }
+    catch (err) { return out_({ ok: false, error: 'GivenGain: ' + String(err && err.message || err) }); }
+  }
+  const ss =SHEET_ID ? SpreadsheetApp.openById(SHEET_ID) : SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(SHEET) || ss.getSheets()[0];
   const lock = LockService.getScriptLock();
   try {
@@ -81,6 +86,40 @@ function updateWeek_(sh, wk, fields) {
     if (cell.getFormula()) return;
     cell.setValue(fields[k]);
   });
+}
+
+// GivenGain fundraising page: totals and donor list (public data), cached for 10 minutes.
+function donations_(id) {
+  if (!/^\d+$/.test(id)) return { ok: false, error: 'Missing or invalid GivenGain project number' };
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('gg' + id);
+  if (hit) return JSON.parse(hit);
+  const api = 'https://api.givengain.com/v4/project/' + id;
+  const get = u => JSON.parse(UrlFetchApp.fetch(u, { headers: { Accept: 'application/json' } }).getContentText());
+  const p = get(api);
+  let items = [], q = '?page=0&pageSize=100';
+  for (let page = 0; page < 20; page++) {
+    const t = get(api + '/timeline' + q);
+    const its = t.items || [];
+    items = items.concat(its);
+    if (its.length < 100 || !t.lastCursor) break;
+    q = '?page=' + (page + 1) + '&pageSize=100&lastCursor=' + encodeURIComponent(t.lastCursor) + '&asOfTimestamp=' + encodeURIComponent(t.asOfTimestamp);
+  }
+  const s = p.stats || {};
+  const res = {
+    ok: true, project: id, title: p.title || '', currency: p.currency || 'USD',
+    total: s.total != null ? s.total : p.amountRaised, raised: s.raised != null ? s.raised : p.amountRaised,
+    offplatform: s.offplatform || 0, target: p.target || null,
+    minimum: (p.fundmin && p.fundmin.finalMilestoneAmount) || null, deadline: p.deadline || null,
+    at: new Date().toISOString(),
+    donations: items.filter(i => /donation/.test(i.type)).map(i => {
+      const d = i.payload || {};
+      return { id: i.id, date: i.timestamp, amount: Number(d.amount) || 0, donor: d.anonymous ? 'Anonymous' : (d.donor || 'Anonymous'),
+        message: d.message || '', offPlatform: i.type !== 'donation' || !!d.offPlatform };
+    }),
+  };
+  cache.put('gg' + id, JSON.stringify(res), 600);
+  return res;
 }
 
 // Values are day fractions (e.g. 3:30:00 = 0.145833).

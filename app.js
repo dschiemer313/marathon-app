@@ -290,9 +290,110 @@ function editWorkout(id) {
   });
 }
 
+/* ---------- fundraising (GivenGain, read through the Google Apps Script link) ---------- */
+S.fund = load('mt.fund', null);     // { url, id, data, at }
+S.thanks = load('mt.thanks', {});   // donation id -> true once thanked
+const ggId = url => (String(url || '').trim().match(/givengain\.com\/project\/(?:[^?#]*?-)?(\d+)(?:[/?#]|$)/) || String(url || '').trim().match(/^(\d+)$/) || [])[1];
+const money = (n, cents) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0 });
+async function loadFund(manual) {
+  if (!S.fund?.id) return;
+  if (!S.gsheet) { if (manual) toast('The donation tracker uses your Google Sheet link. Import from it once in Settings → Starting data.', 5000); return; }
+  try {
+    const r = await fetch(`${S.gsheet.url}?key=${encodeURIComponent(S.gsheet.key)}&action=donations&project=${S.fund.id}&t=${Date.now()}`);
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'Donation tracker error');
+    if (j.total == null) throw new Error('Your Google script needs the donation update (see README)');
+    const before = S.fund.data?.donations?.length;
+    S.fund = { ...S.fund, data: j, at: Date.now() }; save('mt.fund', S.fund);
+    const added = before != null ? j.donations.length - before : 0;
+    if (manual || added > 0) toast(added > 0 ? `🎉 ${added} new donation${added > 1 ? 's' : ''}! ${money(j.total)} raised` : `Donations updated: ${money(j.total)} raised`, 4000);
+    render();
+  } catch (e) { console.error(e); if (manual) toast(e.message, 6000); }
+}
+function shareFund() {
+  const url = S.fund?.url; if (!url) return;
+  const d = S.fund.data;
+  const text = d ? `I'm running the 2027 Boston Marathon for the Boys & Girls Club of Lawrence. ${money(d.total)} raised so far. Help me reach ${money(d.target)}!` : 'Support my Boston Marathon fundraiser';
+  if (navigator.share) navigator.share({ title: d?.title || 'My Boston Marathon fundraiser', text, url }).catch(() => {});
+  else { navigator.clipboard?.writeText(url); toast('Link copied'); }
+}
+function fundBar(d) {
+  const top = Math.max(d.target || 0, d.total || 0, d.minimum || 0) || 1;
+  const pct = Math.min(100, (d.total / top) * 100), minPct = d.minimum ? (d.minimum / top) * 100 : null;
+  return `<div class="fbar" role="img" aria-label="${money(d.total)} of ${money(d.target)} raised"><div class="fill${d.minimum && d.total >= d.minimum ? ' met' : ''}" style="width:${pct}%"></div>${minPct && minPct < 100 ? `<i class="tick" style="left:${minPct}%"></i>` : ''}</div>
+    <div class="fbar-l"><span>${Math.floor((d.total / (d.target || top)) * 100)}% of ${money(d.target)}</span>${d.minimum ? `<span>${d.total >= d.minimum ? '✓ ' + money(d.minimum) + ' minimum met' : money(d.minimum - d.total) + ' to ' + money(d.minimum) + ' minimum'}</span>` : ''}</div>`;
+}
+function fundCard() {
+  if (!S.fund?.id) return '';
+  const d = S.fund.data;
+  if (!d) return `<div class="card fund-card" data-act="goto-fund"><div class="t">Fundraising</div><div class="note">Loading your GivenGain page…</div></div>`;
+  const last = d.donations[0];
+  return `<h2 class="h2-row">Fundraising <button class="chip-btn" data-act="share-fund">Share</button></h2>
+    <div class="card fund-card tappable" data-act="goto-fund">
+    <div class="fund-top"><div><div class="hero-num" style="font-size:30px">${money(d.total)}</div><div class="hero-sub">raised for Boys &amp; Girls Club of Lawrence</div></div><div class="chev">›</div></div>
+    ${fundBar(d)}
+    ${last ? `<div class="note" style="margin-top:8px">Latest: <b>${esc(last.donor)}</b> ${money(last.amount)} · ${fmtDate(last.date.slice(0, 10))}${last.message ? ` · “${esc(last.message.slice(0, 60))}${last.message.length > 60 ? '…' : ''}”` : ''}</div>` : ''}</div>`;
+}
+function viewFund() {
+  const f = S.fund, d = f?.data;
+  if (!d) return `<div class="card empty"><p><b>Fundraising tracker</b></p><p class="note">Add your GivenGain page in Settings → Fundraising.</p><button class="btn" data-act="goto-settings">Open Settings</button></div>`;
+  const named = d.donations.filter(x => x.donor !== 'Anonymous');
+  const toThank = named.filter(x => !S.thanks[x.id]).length;
+  const avg = d.donations.length ? d.total / d.donations.length : 0;
+  const daysLeft = d.deadline ? Math.max(0, daysBetween(TODAY, d.deadline.slice(0, 10))) : null;
+  const rows = d.donations.map(x => {
+    const anon = x.donor === 'Anonymous', done = !!S.thanks[x.id];
+    return `<div class="run donor">
+      ${anon ? '<div class="check" style="opacity:.35" title="Anonymous">–</div>' : `<button class="check${done ? ' done' : ''}" data-thank="${esc(x.id)}" aria-label="${done ? 'Thanked' : 'Mark as thanked'}">${done ? '✓' : ''}</button>`}
+      <div class="grow"><div class="nm">${esc(x.donor)}${x.offPlatform ? ' <span class="src" style="color:var(--muted)">offline</span>' : ''}</div>
+        <div class="meta">${fmtDate(x.date.slice(0, 10))}</div>${x.message ? `<div class="notes">“${esc(x.message)}”</div>` : ''}</div>
+      <div class="mi">${money(x.amount)}</div></div>`;
+  }).join('');
+  return `<button class="chip-btn" data-act="goto-today" style="margin:4px 0 10px">‹ Today</button>
+  <div class="card"><div class="hero-num">${money(d.total)}</div><div class="hero-sub" style="margin-bottom:12px">raised of ${money(d.target)} · ${esc(d.title)}</div>${fundBar(d)}</div>
+  <div class="stats">
+    <div class="stat"><div class="k">Donations</div><div class="v">${d.donations.length}</div><div class="s">avg ${money(avg)}</div></div>
+    <div class="stat"><div class="k">To thank</div><div class="v">${toThank}</div><div class="s">of ${named.length} named</div></div>
+    <div class="stat"><div class="k">Days left</div><div class="v">${daysLeft ?? '–'}</div><div class="s">${d.deadline ? 'until ' + fmtDate(d.deadline.slice(0, 10)) : ''}</div></div></div>
+  <div class="card chart-card" style="margin-top:12px"><h3>Raised over time</h3><div class="sub">Running total vs your target</div>
+    <div class="legend"><span><i style="background:var(--series-1)"></i>Raised</span><span><i style="background:var(--series-2)"></i>Target</span>${d.minimum ? '<span><i style="background:var(--series-3)"></i>Minimum</span>' : ''}</div>
+    <div class="chart-wrap" style="height:200px"><canvas id="c-fund" role="img" aria-label="Running total raised over time"></canvas></div></div>
+  <div class="row2 even" style="margin:12px 0"><button class="btn" data-act="share-fund" style="margin:0">Share my page</button><a class="btn secondary" href="${esc(f.url)}" target="_blank" rel="noopener" style="margin:0;text-decoration:none">Open GivenGain</a></div>
+  <h2>Donors <span class="muted" style="text-transform:none;letter-spacing:0">· tap ○ once you've said thanks</span></h2>
+  <div class="card list">${rows}</div>
+  <p class="note" style="text-align:center">Updated ${new Date(f.at).toLocaleString()} · <a href="#" data-act="fund-refresh">refresh</a></p>`;
+}
+function drawFundChart() {
+  const el = document.getElementById('c-fund'), d = S.fund?.data;
+  if (!el || !d || typeof Chart === 'undefined') return;
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  const pts = [...d.donations].sort((a, b) => (a.date < b.date ? -1 : 1));
+  let run = 0; const data = pts.map(x => ({ x: new Date(x.date).getTime(), y: (run += x.amount) }));
+  if (data.length) data.push({ x: parseISO(TODAY).getTime() + 864e5 / 2, y: run });
+  const x0 = data.length ? data[0].x - 2 * 864e5 : Date.now(), x1 = Math.max(Date.now(), data.length ? data[data.length - 1].x : 0) + 2 * 864e5;
+  const flat = (y, c) => ({ type: 'line', data: [{ x: x0, y }, { x: x1, y }], borderColor: c, borderWidth: 2, pointRadius: 0, borderDash: [] });
+  S.charts.push(new Chart(el, {
+    type: 'line',
+    data: { datasets: [
+      { label: 'Raised', data, borderColor: v('--series-1'), backgroundColor: v('--series-1') + '22', fill: true, stepped: 'before', borderWidth: 2, pointRadius: 0, pointHoverRadius: 5 },
+      { label: 'Target', ...flat(d.target, v('--series-2')) },
+      ...(d.minimum ? [{ label: 'Minimum', ...flat(d.minimum, v('--series-3')) }] : []),
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+      interaction: { mode: 'nearest', intersect: false, axis: 'x' },
+      plugins: { legend: { display: false }, tooltip: { filter: i => i.datasetIndex === 0, backgroundColor: v('--text'), titleColor: v('--surface'), bodyColor: v('--surface'), callbacks: { title: i => { const t = new Date(i[0].raw.x); return `${MON[t.getMonth()]} ${t.getDate()}`; }, label: c => ` ${money(c.raw.y)} raised` } } },
+      scales: {
+        x: { type: 'linear', min: x0, max: x1, grid: { display: false }, border: { color: v('--grid') }, ticks: { color: v('--muted'), maxTicksLimit: 5, maxRotation: 0, callback: val => { const t = new Date(val); return `${MON[t.getMonth()]} ${t.getDate()}`; } } },
+        y: { beginAtZero: true, suggestedMax: (d.target || 0) * 1.05, grid: { color: v('--grid') }, border: { display: false }, ticks: { color: v('--muted'), callback: val => '$' + (val >= 1000 ? val / 1000 + 'k' : val) } },
+      },
+    },
+  }));
+}
+
 /* ---------- backup ---------- */
 function exportBackup() {
-  const data = { app: 'marathon-trainer', version: 2, exportedAt: new Date().toISOString(), plan: S.plan, workouts: S.workouts };
+  const data = { app: 'marathon-trainer', version: 2, exportedAt: new Date().toISOString(), plan: S.plan, workouts: S.workouts, fund: S.fund ? { url: S.fund.url, id: S.fund.id } : null, thanks: S.thanks };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const file = new File([blob], `marathon-backup-${TODAY}.json`, { type: 'application/json' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Marathon backup' }).catch(() => {}); return; }
@@ -305,7 +406,8 @@ function restoreBackup() {
       const d = JSON.parse(await inp.files[0].text());
       if (d.app !== 'marathon-trainer' || !d.plan || !Array.isArray(d.workouts)) throw new Error('That isn\'t a Marathon backup file');
       if (!confirm(`Restore the backup from ${new Date(d.exportedAt).toLocaleDateString()}? It replaces your current plan and workouts.`)) return;
-      S.plan = d.plan; save('mt.plan', S.plan); setWorkouts(d.workouts); toast(`Restored ${d.workouts.length} workouts`); render();
+      S.plan = d.plan; save('mt.plan', S.plan); setWorkouts(d.workouts);
+      if (d.fund) { S.fund = d.fund; save('mt.fund', S.fund); } if (d.thanks) { S.thanks = d.thanks; save('mt.thanks', S.thanks); } toast(`Restored ${d.workouts.length} workouts`); render();
     } catch (e) { toast('Restore failed: ' + e.message, 5000); }
   };
   inp.click();
@@ -693,6 +795,7 @@ function viewToday() {
     <div class="stat"><div class="k">Predicted</div><div class="v">${pred ? fmtHM(pred.sec) : '–'}</div><div class="s">${pred ? fmtPace(pred.sec / P.distance) + '/mi' : 'need 4+ mi run'}</div></div>
     <div class="stat"><div class="k">vs plan</div><div class="v">${cumDiff >= 0 ? '+' : ''}${Math.round(cumDiff)} mi</div><div class="s">${done.length} wks done</div></div>
   </div>
+  ${fundCard()}
   <h2 class="h2-row">This week <button class="chip-btn" data-act="edit-week" data-i="${ci}">Edit</button></h2><div class="card tight">${sessions}${extra}${xtRow(w)}</div>
   <h2>Coach</h2>${recs}
   <h2>Recent</h2><div class="card list">${recent || '<div class="empty">No activities yet</div>'}</div>`;
@@ -748,6 +851,11 @@ function viewSettings() {
         <label class="f" for="code">Paste authorization code</label><input id="code" type="text" autocomplete="off">
         <button class="btn secondary" data-act="code">Use code</button></details>`}
     <div class="note" style="margin-top:10px">Keys and tokens stay on this phone only.</div></div>
+
+  <h2>Fundraising</h2><div class="card">
+    ${S.fund?.data ? `<div class="ok">✓ Tracking “${esc(S.fund.data.title)}”</div><div class="note">${money(S.fund.data.total)} raised · updated ${new Date(S.fund.at).toLocaleString()}</div>` : '<div class="note">Paste your GivenGain page link to track donations on the Today screen. It uses your Google Sheet link (Starting data) to read GivenGain.</div>'}
+    <label class="f" for="fundurl">GivenGain page link</label><input id="fundurl" type="text" autocomplete="off" value="${esc(S.fund?.url || '')}" placeholder="https://www.givengain.com/project/…">
+    <button class="btn ${S.fund?.data ? 'secondary' : ''}" data-act="fund-save">${S.fund?.id ? 'Save &amp; refresh' : 'Track donations'}</button></div>
 
   ${P ? `<h2>Race goal</h2><div class="card">
     <div class="stats"><div class="stat"><div class="k">Goal</div><div class="v">${fmtDur(P.race.goalSec)}</div><div class="s">${fmtPace(P.race.goalPace)}/mi</div></div>
@@ -853,16 +961,17 @@ function drawCharts() {
 }
 
 /* ---------- render + events ---------- */
-const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings' };
+const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising' };
 function render() {
   const view = document.getElementById('view');
   document.getElementById('hdr-title').textContent = TITLES[S.tab];
   document.getElementById('hdr-eyebrow').textContent = S.plan ? `${S.plan.race.name} · ${fmtHM(S.plan.race.goalSec)} goal` : 'Marathon Trainer';
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === S.tab));
-  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings }[S.tab];
+  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund }[S.tab];
   view.innerHTML = fn();
   if (S.tab === 'plan') view.querySelector('.week.current')?.scrollIntoView({ block: 'center' });
-  if (S.tab === 'charts') drawCharts(); else { S.charts.forEach(c => c.destroy()); S.charts = []; }
+  S.charts.forEach(c => c.destroy()); S.charts = [];
+  if (S.tab === 'charts') drawCharts(); else if (S.tab === 'fund') drawFundChart();
 }
 
 document.querySelector('.tabbar').addEventListener('click', e => {
@@ -871,6 +980,7 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 });
 document.getElementById('log-btn').addEventListener('click', () => editWorkout());
 document.getElementById('view').addEventListener('click', async e => {
+  const th = e.target.closest('[data-thank]'); if (th) { const id = th.dataset.thank; if (S.thanks[id]) delete S.thanks[id]; else S.thanks[id] = true; save('mt.thanks', S.thanks); render(); return; }
   const row = e.target.closest('[data-wid]'); if (row) { editWorkout(row.dataset.wid); return; }
   const wk = e.target.closest('.week'); if (wk) { document.getElementById('wd-' + wk.dataset.week).classList.toggle('open'); return; }
   const f = e.target.closest('[data-filter]'); if (f) { S.runFilter = f.dataset.filter; render(); return; }
@@ -878,7 +988,17 @@ document.getElementById('view').addEventListener('click', async e => {
   const act = a.dataset.act;
   const readKeys = () => { const id = document.getElementById('cid'), sec = document.getElementById('csec'); if (id) { S.strava.clientId = id.value.trim(); S.strava.clientSecret = sec.value.trim(); save('mt.strava', S.strava); } };
   if (act === 'import') pickFile();
-  else if (act === 'goto-settings') { S.tab = 'settings'; render(); }
+  else if (act === 'goto-settings') { S.tab = 'settings'; render(); window.scrollTo(0, 0); }
+  else if (act === 'goto-fund') { S.tab = 'fund'; render(); window.scrollTo(0, 0); }
+  else if (act === 'goto-today') { S.tab = 'today'; render(); window.scrollTo(0, 0); }
+  else if (act === 'share-fund') { e.stopPropagation(); shareFund(); }
+  else if (act === 'fund-refresh') { e.preventDefault(); loadFund(true); }
+  else if (act === 'fund-save') {
+    const url = document.getElementById('fundurl').value.trim(), id = ggId(url);
+    if (!id) { toast('Paste the full GivenGain project link (it ends in a number)', 5000); return; }
+    S.fund = { url: /^https?:/.test(url) ? url : `https://www.givengain.com/project/${id}`, id, data: S.fund?.id === id ? S.fund.data : null, at: S.fund?.at };
+    save('mt.fund', S.fund); a.disabled = true; await loadFund(true); a.disabled = false;
+  }
   else if (act === 'edit-week') editWeek(+a.dataset.i);
   else if (act === 'edit-goals') editGoals();
   else if (act === 'gs-import') { a.disabled = true; await importSheet(document.getElementById('gslink').value); a.disabled = false; }
@@ -889,7 +1009,7 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'sync') sync(true);
   else if (act === 'disconnect') { if (confirm('Disconnect Strava? Synced activities will be removed from this phone.')) { S.strava = { clientId: S.strava.clientId, clientSecret: S.strava.clientSecret }; S.acts = []; save('mt.strava', S.strava); save('mt.acts', []); render(); } }
   else if (act === 'export') exportBackup();
-  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
+  else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet', 'mt.fund', 'mt.thanks'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.tab === 'charts' && drawCharts());
 
@@ -913,6 +1033,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.
   }
   render();
   navigator.storage?.persist?.().catch(() => {});
+  if (S.fund?.id && (!S.fund.at || Date.now() - S.fund.at > 30 * 60e3)) loadFund(false);
   if (stravaConnected() && (!S.lastSync || Date.now() - S.lastSync > 30 * 60e3)) sync(false);
 })();
 

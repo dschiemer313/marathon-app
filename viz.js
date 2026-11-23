@@ -45,7 +45,7 @@ const journeyWhere = J => (J.next && J.next[0] - J.pos < 0.6 ? `approaching ${J.
 function journeyCard() {
   if (!S.plan) return '';
   const J = journeyData(); if (!J.tot) return '';
-  return `<button class="card race-link journey-link" data-act="goto-journey"><span>🦄</span><div><b>Virtual Boston · lap ${J.lap}</b>
+  return `<button class="card race-link journey-link" data-act="goto-journey"><span>📍</span><div><b>Virtual Boston · lap ${J.lap}</b>
     <div class="note">Mile ${J.pos.toFixed(1)}, ${esc(journeyWhere(J))}</div>
     <div class="jl-bar"><i style="width:${(J.pos / 26.2 * 100).toFixed(1)}%"></i></div></div><span class="chev">›</span></button>`;
 }
@@ -242,14 +242,18 @@ async function initRouteMap() {
 /* =====================================================================
    4 · Training bloom: the whole block as a flower
    ===================================================================== */
-function bloomKind(r, weeks) {
-  if (S.plan && r.date === S.plan.race.date && r.miles > 20) return 'race';
+// Two separate traits per run: pace (color) and whether it was a long run (outline), plus races (star).
+const RACE_DIST = [[3.107, 0.15], [6.214, 0.2], [13.109, 0.3], [26.219, 0.5]];
+function bloomInfo(r, weeks) {
+  const P = S.plan.race, pace = r.sec ? r.sec / r.miles : null;
+  const quick = pace != null && pace < P.goalPace + 10;
   const w = weeks.find(x => r.date >= x.start && r.date < x.end);
-  if (w && w.sessions.some(s => s.kind === 'long' && s.run === r)) return 'long';
-  if (r.miles >= 10) return 'long';
-  if (r.sec && r.sec / r.miles < S.plan.race.goalPace + 10) return 'quick';
-  return 'easy';
+  const long = r.miles >= 10 || !!(w && w.sessions.some(s => (s.kind === 'long' || s.kind === 'race') && s.run === r));
+  const race = r.date === P.date && r.miles > 20 || /(race|half|marathon|5k|10k)/i.test(r.name || '') ||
+    (pace != null && pace < P.goalPace + 15 && RACE_DIST.some(([d, t]) => Math.abs(r.miles - d) <= t));
+  return { pace: quick ? 'quick' : 'easy', long, race };
 }
+const bloomLabel = b => `${b.race ? 'Race · ' : ''}${b.long ? 'long run' : 'run'} at ${b.pace === 'quick' ? 'quicker' : 'easy'} pace`;
 function bloomSVG(opts = {}) {
   const P = S.plan.race, weeks = weekStats(), start = S.plan.weeks[0].start, end = P.date, span = daysBetween(start, end) + 1;
   const SZ = 640, c = SZ / 2, r0 = 64, rMax = 270, scale = (rMax - r0) / 26.2;
@@ -277,8 +281,9 @@ function bloomSVG(opts = {}) {
   }
   // runs done: biggest first so short runs sit on top
   for (const r of rr) {
-    const k = bloomKind(r, weeks), n = (perDay[r.date] = (perDay[r.date] || 0) + 1) - 1;
-    s += petal(r.date, r.miles, col[k], opts.bg || col.surface, `stroke-width="1.2" fill-opacity=".9" data-bloom="${esc(r.id)}" class="petal"`, n * 0.012);
+    const b = bloomInfo(r, weeks), n = (perDay[r.date] = (perDay[r.date] || 0) + 1) - 1;
+    s += petal(r.date, r.miles, col[b.pace], b.long ? col.text : (opts.bg || col.surface), `stroke-width="${b.long ? 1.8 : 1.2}" ${b.long ? 'stroke-opacity=".85"' : ''} fill-opacity=".9" data-bloom="${esc(r.id)}" class="petal"`, n * 0.012);
+    if (b.race) { const [x, y] = pt(ang(r.date) + n * 0.012, r0 + Math.max(10, r.miles * scale) + 11); s += `<text x="${x.toFixed(1)}" y="${(y + 6).toFixed(1)}" text-anchor="middle" font-size="18" fill="${col.race}" pointer-events="none">★</text>`; }
   }
   // cross-training: dots inside the core
   activities().filter(a => a.isXT && a.date >= start && a.date <= end).forEach(a => { const [x, y] = pt(ang(a.date), r0 - 12); s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="${col.xt}" fill-opacity=".75"/>`; });
@@ -299,12 +304,12 @@ function bloomSVG(opts = {}) {
 }
 function viewBloom() {
   if (!S.plan) return emptyPlan();
-  const L = (color, label, ring) => `<span><i style="background:${ring ? 'transparent' : color};${ring ? `border:1.5px dashed ${color};` : ''}"></i>${label}</span>`;
-  const rr = runs().filter(r => r.date >= S.plan.weeks[0].start), weeks = weekStats();
-  const k = { easy: 0, quick: 0, long: 0 }; rr.forEach(r => { const x = bloomKind(r, weeks); if (k[x] != null) k[x]++; });
+  const L = (color, label, ring, solidRing) => `<span><i style="background:${ring ? 'transparent' : color};${ring ? `border:1.5px ${solidRing ? 'solid' : 'dashed'} ${color};` : ''}"></i>${label}</span>`;
+  const rr = runs().filter(r => r.date >= S.plan.weeks[0].start && r.date <= S.plan.race.date), weeks = weekStats();
+  const k = { easy: 0, quick: 0, long: 0, race: 0 }; rr.forEach(r => { const b = bloomInfo(r, weeks); k[b.pace]++; if (b.long) k.long++; if (b.race) k.race++; });
   return `<div class="card chart-card"><h3>Your training bloom</h3>
-    <div class="sub">Every run of the plan is a petal: the angle is the date (clockwise from ${fmtDate(S.plan.weeks[0].start)} to race day), the length is the miles. Dashed petals are runs still to come, and it fills in as you train.</div>
-    <div class="legend">${L('var(--series-1)', `Easy · ${k.easy}`) + L('var(--series-2)', `Quicker · ${k.quick}`) + L('var(--series-3)', `Long · ${k.long}`) + L('var(--plan)', 'Planned', true) + L('var(--text-2)', 'Cross-train')}</div>
+    <div class="sub">Every run of the plan is a petal: the angle is the date (clockwise from ${fmtDate(S.plan.weeks[0].start)} to race day), the length is the miles, and the color is the pace. Long runs have a dark outline, so a quick long run is an outlined orange petal. Dashed petals are runs still to come, and it fills in as you train.</div>
+    <div class="legend">${L('var(--series-1)', `Easy pace · ${k.easy}`) + L('var(--series-2)', `Quicker pace · ${k.quick}`) + L('var(--text)', `Long run · ${k.long}`, true, true) + `<span><b style="color:var(--critical)">★</b> Race · ${k.race}</span>` + L('var(--plan)', 'Planned', true) + L('var(--text-2)', 'Cross-train')}</div>
     <div class="bloom-wrap" id="bloom">${bloomSVG()}</div>
     <div class="hm-detail" id="bloom-detail">Tap a petal to see the run.</div>
     <button class="btn secondary" data-act="bloom-save">Save as image</button></div>`;
@@ -313,7 +318,7 @@ function showBloomRun(id) {
   const r = runs().find(x => String(x.id) === String(id)); if (!r) return;
   document.querySelectorAll('.petal.sel').forEach(p => p.classList.remove('sel'));
   document.querySelector(`.petal[data-bloom="${CSS.escape(String(id))}"]`)?.classList.add('sel');
-  document.getElementById('bloom-detail').innerHTML = `<b>${DOW[parseISO(r.date).getDay()]} ${fmtDate(r.date)}</b> · ${esc(r.name)} · ${mi1(r.miles)} mi${r.sec ? ' @ ' + fmtPace(r.sec / r.miles) + '/mi' : ''}`;
+  document.getElementById('bloom-detail').innerHTML = `<b>${DOW[parseISO(r.date).getDay()]} ${fmtDate(r.date)}</b> · ${esc(r.name)} · ${mi1(r.miles)} mi${r.sec ? ' @ ' + fmtPace(r.sec / r.miles) + '/mi' : ''} · ${bloomLabel(bloomInfo(r, weekStats()))}`;
 }
 async function saveBloom() {
   const bg = cssVar('--surface') || '#ffffff';
@@ -434,7 +439,7 @@ function exploreRow() {
   if (!S.plan) return '';
   const J = journeyData();
   return `<div class="explore">
-    <button class="xp" data-act="goto-journey"><span class="xi">🦄</span><b>Virtual Boston</b><span>Lap ${J.lap} · mi ${J.pos.toFixed(1)}</span></button>
+    <button class="xp" data-act="goto-journey"><span class="xi">📍</span><b>Virtual Boston</b><span>Lap ${J.lap} · mi ${J.pos.toFixed(1)}</span></button>
     <button class="xp" data-act="goto-routes"><span class="xi">🗺️</span><b>Route map</b><span>Every run you've drawn</span></button>
     <button class="xp" data-act="goto-bloom"><span class="xi">🌸</span><b>Training bloom</b><span>Your block as a flower</span></button></div>`;
 }

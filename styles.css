@@ -144,7 +144,7 @@ main { padding: 0 16px 16px; max-width: 720px; margin: 0 auto; }
 .run .grow { min-width: 0; flex: 1; }
 
 label.f { display: block; font-size: 13px; font-weight: 600; color: var(--text-2); margin: 12px 0 4px; }
-input[type=text], input[type=password] {
+input[type=text], input[type=password], input[type=number] {
   width: 100%; font: inherit; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--surface-2); color: var(--text);
 }
@@ -157,6 +157,21 @@ input[type=text], input[type=password] {
 .ok { color: var(--good-text); font-weight: 600; }
 .empty { text-align: center; padding: 40px 16px; color: var(--text-2); }
 .empty .big { font-size: 44px; margin-bottom: 8px; }
+
+.h2-row { display: flex; align-items: center; justify-content: space-between; }
+.chip-btn { border: 1px solid var(--border); background: var(--surface-2); color: var(--accent); font-size: 12px; font-weight: 650; padding: 5px 12px; border-radius: 999px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.week-detail .chip-btn { margin-top: 8px; }
+.row2 { display: grid; grid-template-columns: 1fr 92px; gap: 10px; align-items: end; }
+.row2 > div { min-width: 0; }
+.sheet-bg { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; animation: fade .2s; }
+.sheet { width: 100%; max-width: 560px; max-height: 92vh; overflow-y: auto; background: var(--surface); border-radius: 18px 18px 0 0; padding: 4px 16px calc(20px + env(safe-area-inset-bottom)); animation: up .25s ease-out; }
+.sheet-h { position: sticky; top: 0; background: var(--surface); display: flex; align-items: center; justify-content: space-between; padding: 12px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; z-index: 1; }
+.sheet-h b { font-size: 16px; }
+.link { background: none; border: 0; color: var(--accent); font-size: 16px; padding: 6px 2px; cursor: pointer; }
+.link.strong { font-weight: 700; }
+.link:disabled { opacity: .5; }
+@keyframes up { from { transform: translateY(40px); opacity: .4; } }
+@keyframes fade { from { opacity: 0; } }
 
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;

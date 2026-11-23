@@ -46,8 +46,11 @@ const isNum = v => typeof v === 'number' && isFinite(v);
 
 function parseWorkbook(wb, fileName) {
   const ws = wb.Sheets['Training'] || wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-  const str = v => (typeof v === 'string' ? v.trim() : '');
+  return parseRows(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }), fileName);
+}
+// rows: 2-D array of cell values; dates/durations as spreadsheet serial numbers.
+function parseRows(rows, fileName) {
+  const str =v => (typeof v === 'string' ? v.trim() : '');
 
   // value to the right of a label cell
   const labelVal = re => {
@@ -103,40 +106,159 @@ function parseWorkbook(wb, fileName) {
   const goalPace = labelVal(/^Goal pace/i);
   const easy = labelVal(/^Easy pace \(/i);
   const quick = labelVal(/^Quicker run pace/i);
+  const easyOffF = labelVal(/^Easy pace offset/i), quickOffF = labelVal(/^Quicker-run offset/i);
   // half-marathon benchmark block
   let bench = null;
   const bi = rows.findIndex(r => r.some(v => /benchmark/i.test(str(v))));
   if (bi >= 0) {
     const bc = rows[bi].findIndex(v => /benchmark/i.test(str(v)));
     const near = (re) => { for (let i = bi + 1; i < Math.min(rows.length, bi + 8); i++) if (re.test(str(rows[i][bc])) && isNum(rows[i][bc + 1])) return rows[i][bc + 1]; return null; };
-    const bd = near(/^Race date/i), bdist = near(/^Distance/i), bt = near(/^Finish time/i);
+    const bd = near(/^Race date/i);
+    let bdist = near(/^Distance/i), bt = near(/^Finish time/i);
+    if (bd && (!bdist || !bt)) { const l = log.find(x => x.date === serialToISO(bd) && x.miles > 0); if (l) { bdist = l.miles; bt = l.sec / 86400; } }
     if (bd && bdist && bt) bench = { date: serialToISO(bd), miles: bdist, sec: fracToSec(bt), name: String(rows[bi][bc]).trim() };
   }
 
   const lastLong = weeks[weeks.length - 1];
+  const gp = goalFrac ? goalSec / dist : goalPace ? fracToSec(goalPace) : goalSec / dist;
+  const easyOff = easyOffF != null ? fracToSec(easyOffF) : easy ? fracToSec(easy) - gp : 75;
+  const quickOff = quickOffF != null ? fracToSec(quickOffF) : quick ? gp - fracToSec(quick) : 25;
   const race = {
     date: raceSerial ? serialToISO(raceSerial) : addDays(lastLong.start, 1),
-    goalSec, distance: dist,
-    goalPace: goalPace ? fracToSec(goalPace) : goalSec / dist,
-    easyPace: easy ? fracToSec(easy) : goalSec / dist + 75,
-    quickPace: quick ? fracToSec(quick) : goalSec / dist - 25,
+    goalSec, distance: dist, easyOff, quickOff,
+    goalPace: gp,
+    easyPace: gp + easyOff,
+    quickPace: gp - quickOff,
     name: (rows.flat().find(v => /marathon.*plan/i.test(str(v))) || 'Marathon').replace(/\s*[–—-]?\s*sandbox.*$/i, '').replace(/\s*plan$/i, '').trim(),
   };
   return { race, weeks, log, bench, fileName, importedAt: new Date().toISOString() };
 }
 
 async function importFile(file) {
+  if (gsLinked() && !confirm('Your plan is linked to a Google Sheet. Importing this file will unlink it. Continue?')) return;
+  if (!gsLinked() && S.plan?.edited && !confirm('Importing will replace the edits you made in the app. Continue?')) return;
   try {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: 'array' });
     S.plan = parseWorkbook(wb, file.name);
     save('mt.plan', S.plan);
+    S.gsheet = null; localStorage.removeItem('mt.gsheet');
     toast(`Imported ${S.plan.weeks.length} weeks from ${file.name}`);
     render();
   } catch (e) {
     console.error(e); toast('Import failed: ' + e.message, 5000);
   }
 }
+/* ---------- Google Sheet link (Apps Script web app) ---------- */
+S.gsheet = load('mt.gsheet', null); // { url, key, name, at }
+const gsLinked = () => !!(S.gsheet && S.gsheet.url && S.gsheet.key);
+function parseGsLink(s) {
+  const m = String(s || '').trim().match(/^(https:\/\/script\.google(?:usercontent)?\.com\/[^#\s]+)#(.+)$/);
+  return m ? { url: m[1], key: decodeURIComponent(m[2]) } : null;
+}
+function applySheet(j, link) {
+  if (!j.ok) throw new Error(j.error || 'Google Sheet error');
+  const plan = parseRows(j.rows, j.name || 'Google Sheet');
+  plan.source = 'gsheet';
+  S.plan = plan; save('mt.plan', plan);
+  S.gsheet = { ...link, name: j.name, at: Date.now() }; save('mt.gsheet', S.gsheet);
+}
+async function gsRequest(link, body) {
+  const opt = body ? { method: 'POST', body: JSON.stringify({ key: link.key, ...body }) } : undefined; // text/plain: no CORS preflight
+  const url = body ? link.url : `${link.url}?key=${encodeURIComponent(link.key)}&t=${Date.now()}`;
+  const r = await fetch(url, opt);
+  if (!r.ok) throw new Error('Google Sheet link error ' + r.status);
+  let j; try { j = await r.json(); } catch { throw new Error('Google Sheet link did not return data. Was it deployed with access "Anyone"?'); }
+  applySheet(j, link);
+}
+async function loadSheet(manual) {
+  if (!gsLinked()) return;
+  try { await gsRequest(S.gsheet); if (manual) toast('Plan refreshed from Google Sheet'); render(); }
+  catch (e) { console.error(e); toast((manual ? '' : 'Offline? Using saved plan. ') + e.message, 4500); }
+}
+async function linkSheet(text) {
+  const link = parseGsLink(text);
+  if (!link) return toast('Paste the full link: the web app URL, then # and your key', 5000);
+  try { await gsRequest(link); toast(`Linked to “${S.gsheet.name}”`); render(); }
+  catch (e) { toast(e.message, 6000); }
+}
+
+/* ---------- editing the plan ---------- */
+const withMiles = (text, oldMi, newMi) => (text && oldMi !== newMi ? text.replace(new RegExp(`\\b${String(oldMi).replace('.', '\\.')}(\\s*mi\\b)`), `${newMi}$1`) : text);
+async function saveWeek(i, f) {
+  const w = S.plan.weeks[i];
+  if (gsLinked()) await gsRequest(S.gsheet, { action: 'updateWeek', wk: w.wk, fields: f });
+  else { Object.assign(w, f); w.planMi = +(f.run1Mi + f.run2Mi + f.longMi).toFixed(2); S.plan.edited = true; save('mt.plan', S.plan); }
+}
+async function saveGoals(goalSec, easyOff, quickOff) {
+  if (gsLinked()) {
+    await gsRequest(S.gsheet, { action: 'updateSettings', values: { 'Goal finish time': goalSec / 86400, 'Easy pace offset': easyOff / 86400, 'Quicker-run offset': quickOff / 86400 } });
+  } else {
+    const r = S.plan.race, gp = goalSec / r.distance;
+    Object.assign(r, { goalSec, easyOff, quickOff, goalPace: gp, easyPace: gp + easyOff, quickPace: gp - quickOff });
+    S.plan.edited = true; save('mt.plan', S.plan);
+  }
+}
+const parseClock = s => { const p = String(s).trim().split(':').map(Number); if (p.some(isNaN) || !p.length) return NaN; return p.reduce((t, x) => t * 60 + x, 0); };
+
+function openSheet(html, onSubmit) {
+  closeSheet();
+  document.body.insertAdjacentHTML('beforeend', `<div class="sheet-bg" id="sheet"><form class="sheet" id="sheet-form" autocomplete="off">${html}</form></div>`);
+  document.body.style.overflow = 'hidden';
+  const bg = document.getElementById('sheet'), form = document.getElementById('sheet-form');
+  bg.addEventListener('click', e => { if (e.target === bg || e.target.closest('[data-close]')) closeSheet(); });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+    try { await onSubmit(new FormData(form)); closeSheet(); render(); toast(gsLinked() ? 'Saved to Google Sheet' : 'Saved'); }
+    catch (err) { console.error(err); toast(err.message, 5000); btn.disabled = false; btn.textContent = 'Save'; }
+  });
+  return form;
+}
+function closeSheet() { document.getElementById('sheet')?.remove(); document.body.style.overflow = ''; }
+const sheetHead = title => `<div class="sheet-h"><button type="button" class="link" data-close>Cancel</button><b>${title}</b><button type="submit" class="link strong">Save</button></div>`;
+const saveNote = () => `<p class="note">${gsLinked() ? `Saves to your Google Sheet “${esc(S.gsheet.name)}”.` : 'Saved on this device only. Link a Google Sheet in Settings to save edits back to your plan.'}</p>`;
+
+function editWeek(i) {
+  const w = S.plan.weeks[i], phases = [...new Set(S.plan.weeks.map(x => x.phase).filter(Boolean))];
+  const num = (name, v, step = '0.1') => `<input name="${name}" type="number" step="${step}" min="0" inputmode="decimal" value="${v}">`;
+  const form = openSheet(`${sheetHead(`Week ${w.wk} · ${fmtDate(w.start)}`)}
+    <label class="f">Phase</label><input name="phase" type="text" list="phase-list" value="${esc(w.phase)}"><datalist id="phase-list">${phases.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+    <div class="row2"><div><label class="f">Run 1</label><input name="run1" type="text" value="${esc(w.run1)}"></div><div><label class="f">Miles</label>${num('run1Mi', w.run1Mi)}</div></div>
+    <div class="row2"><div><label class="f">Run 2</label><input name="run2" type="text" value="${esc(w.run2)}"></div><div><label class="f">Miles</label>${num('run2Mi', w.run2Mi)}</div></div>
+    <div class="row2"><div><label class="f">Long run notes</label><input name="longNotes" type="text" value="${esc(w.longNotes)}"></div><div><label class="f">Long mi</label>${num('longMi', w.longMi)}</div></div>
+    <label class="f">Cross-train sessions</label>${num('xtTarget', w.xtTarget, '1')}
+    <p class="note">Week total: <b id="wk-total">${w.planMi}</b> mi</p>${saveNote()}`,
+  fd => {
+    const n = k => Math.max(0, +fd.get(k) || 0);
+    const f = { phase: fd.get('phase').trim(), run1Mi: n('run1Mi'), run2Mi: n('run2Mi'), longMi: n('longMi'), xtTarget: Math.round(n('xtTarget')), longNotes: fd.get('longNotes').trim() };
+    f.run1 = withMiles(fd.get('run1').trim(), w.run1Mi, f.run1Mi);
+    f.run2 = withMiles(fd.get('run2').trim(), w.run2Mi, f.run2Mi);
+    return saveWeek(i, f);
+  });
+  form.addEventListener('input', () => { const fd = new FormData(form); document.getElementById('wk-total').textContent = +((+fd.get('run1Mi') || 0) + (+fd.get('run2Mi') || 0) + (+fd.get('longMi') || 0)).toFixed(2); });
+}
+
+function editGoals() {
+  const r = S.plan.race;
+  const form = openSheet(`${sheetHead('Race goal')}
+    <label class="f">Goal finish time (h:mm:ss)</label><input name="goal" type="text" inputmode="numeric" value="${fmtDur(r.goalSec)}">
+    <div class="row2"><div><label class="f">Easy pace: slower than goal by (m:ss)</label><input name="easy" type="text" inputmode="numeric" value="${fmtDur(r.easyOff)}"></div>
+    <div><label class="f">Quicker run: faster by (m:ss)</label><input name="quick" type="text" inputmode="numeric" value="${fmtDur(r.quickOff)}"></div></div>
+    <p class="note" id="goal-preview"></p>${saveNote()}`,
+  fd => {
+    const g = parseClock(fd.get('goal')), e = parseClock(fd.get('easy')), q = parseClock(fd.get('quick'));
+    if (!(g > 3600) || !(e >= 0) || !(q >= 0)) throw new Error('Use times like 3:30:00 and 1:15');
+    return saveGoals(g, e, q);
+  });
+  const prev = () => {
+    const fd = new FormData(form), g = parseClock(fd.get('goal')), e = parseClock(fd.get('easy')), q = parseClock(fd.get('quick'));
+    const gp = g / r.distance;
+    document.getElementById('goal-preview').innerHTML = g > 3600 ? `Goal pace <b>${fmtPace(gp)}</b>/mi · easy <b>${fmtPace(gp + (e || 0))}</b> · quicker <b>${fmtPace(gp - (q || 0))}</b>` : '';
+  };
+  form.addEventListener('input', prev); prev();
+}
+
 function pickFile() {
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = '.xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -443,8 +565,9 @@ const xtRow = w => {
     <div><div class="t">Cross-train</div><div class="d">${esc(detail)}</div></div><div class="m">${w.xt}/${w.xtTarget || 0}</div></div>`;
 };
 const emptyPlan = () => `<div class="card empty"><div class="big">🏃</div><p><b>Import your training plan</b></p>
-  <p class="note">Pick your Marathon spreadsheet (.xlsx) from Files or OneDrive. The app reads the weekly plan, your paces, and your run log.</p>
-  <button class="btn" data-act="import">Choose spreadsheet</button></div>`;
+  <p class="note">Link the Google Sheet with your plan (it stays in sync both ways), or import a one-time copy from an .xlsx file. The app reads the weekly plan, your paces, and your run log.</p>
+  <button class="btn" data-act="goto-settings">Link a Google Sheet</button>
+  <button class="btn secondary" data-act="import">Import an .xlsx file</button></div>`;
 
 function viewToday() {
   if (!S.plan) return emptyPlan();
@@ -470,7 +593,7 @@ function viewToday() {
     <div class="stat"><div class="k">Predicted</div><div class="v">${pred ? fmtHM(pred.sec) : '–'}</div><div class="s">${pred ? fmtPace(pred.sec / P.distance) + '/mi' : 'need 4+ mi run'}</div></div>
     <div class="stat"><div class="k">vs plan</div><div class="v">${cumDiff >= 0 ? '+' : ''}${Math.round(cumDiff)} mi</div><div class="s">${done.length} wks done</div></div>
   </div>
-  <h2>This week</h2><div class="card tight">${sessions}${extra}${xtRow(w)}</div>
+  <h2 class="h2-row">This week <button class="chip-btn" data-act="edit-week" data-i="${ci}">Edit</button></h2><div class="card tight">${sessions}${extra}${xtRow(w)}</div>
   <h2>Coach</h2>${recs}
   <h2>Recent</h2><div class="card list">${recent || '<div class="empty">No activities yet</div>'}</div>`;
 }
@@ -484,7 +607,8 @@ function viewPlan() {
     const pct = w.planMi ? Math.min(100, w.mi / w.planMi * 100) : 0;
     const det = w.sessions.map(s => `<div>${s.done ? '✓' : '○'} ${esc(s.label)}${s.notes && s.kind === 'long' && !/^easy$/i.test(s.notes) ? ' · ' + esc(s.notes) : ''}${s.done ? ` <span class="ok">(${mi1(s.run.miles)} mi)</span>` : ''}</div>`).join('')
       + (w.xtTarget || w.xt ? `<div>${w.xt >= w.xtTarget ? '✓' : '○'} Cross-train ${w.xt}/${w.xtTarget}${w.xtActs.length ? ' · ' + w.xtActs.map(a => `${DOW[parseISO(a.date).getDay()]} ${XT_LABEL[a.type] || a.type}`).join(', ') : ''}</div>` : '')
-      + (w.runs.length ?`<div>Runs: ${w.runs.map(r => `${DOW[parseISO(r.date).getDay()]} ${mi1(r.miles)}`).join(' · ')}${w.pace ? ` · avg ${fmtPace(w.pace)}/mi` : ''}</div>` : '');
+      + (w.runs.length ?`<div>Runs: ${w.runs.map(r => `${DOW[parseISO(r.date).getDay()]} ${mi1(r.miles)}`).join(' · ')}${w.pace ? ` · avg ${fmtPace(w.pace)}/mi` : ''}</div>` : '')
+      + `<button class="chip-btn" data-act="edit-week" data-i="${w.i}">Edit week</button>`;
     return head + `<div class="week ${w.i === ci ? 'current' : ''}" data-week="${w.i}">
       <div class="wn">W${w.wk}</div>
       <div><div>${esc(w.run1 || '—')} · ${esc((w.run2 || '—').replace(/\s*[–—-]\s*shorter, quicker.*$/i, ' quick'))}${w.phase === 'Race' ? ' · <b>RACE</b>' : w.longMi ? ' · <b>Long ' + w.longMi + '</b>' : ''}</div>
@@ -509,12 +633,27 @@ function viewRuns() {
 
 function viewSettings() {
   const P = S.plan, st = S.strava;
+  const g = S.gsheet;
   return `
+  <h2>Google Sheet</h2><div class="card">
+    ${gsLinked() ? `<div class="ok">✓ Linked to “${esc(g.name)}”</div><div class="note">Your plan loads from this sheet each time you open the app, and edits you make here save back to it. Last refreshed ${new Date(g.at).toLocaleString()}.</div>
+      <button class="btn" data-act="gs-refresh">Refresh plan now</button><button class="btn danger" data-act="gs-unlink">Unlink</button>`
+    : `<div class="note">Keep your plan in a Google Sheet so it stays in sync. Edit it in Google Sheets or in this app. Setup steps are in the README on GitHub.</div>
+      <label class="f" for="gslink">Sheet link (web app URL#key)</label><input id="gslink" type="text" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec#key">
+      <button class="btn" data-act="gs-link">Link Google Sheet</button>`}</div>
+
+  ${P ? `<h2>Race goal</h2><div class="card">
+    <div class="stats"><div class="stat"><div class="k">Goal</div><div class="v">${fmtDur(P.race.goalSec)}</div><div class="s">${fmtPace(P.race.goalPace)}/mi</div></div>
+      <div class="stat"><div class="k">Easy</div><div class="v">${fmtPace(P.race.easyPace)}</div><div class="s">+${fmtDur(P.race.easyOff ?? P.race.easyPace - P.race.goalPace)}</div></div>
+      <div class="stat"><div class="k">Quicker</div><div class="v">${fmtPace(P.race.quickPace)}</div><div class="s">−${fmtDur(P.race.quickOff ?? P.race.goalPace - P.race.quickPace)}</div></div></div>
+    <button class="btn secondary" data-act="edit-goals">Change goal &amp; paces</button></div>` : ''}
+
   <h2>Training plan</h2><div class="card">
-    ${P ? `<div class="ok">✓ ${esc(P.fileName)}</div><div class="note">${P.weeks.length} weeks · race ${fmtDate(P.race.date)} · goal ${fmtHM(P.race.goalSec)} (${fmtPace(P.race.goalPace)}/mi) · easy ${fmtPace(P.race.easyPace)}/mi · ${P.log.length} logged runs · imported ${new Date(P.importedAt).toLocaleDateString()}</div>` : '<div class="note">No plan imported yet.</div>'}
-    <button class="btn ${P ? 'secondary' : ''}" data-act="import">${P ? 'Re-import spreadsheet' : 'Import spreadsheet'}</button>
+    ${P ? `<div class="ok">✓ ${esc(P.source === 'gsheet' ? 'Google Sheet: ' + P.fileName : P.fileName)}</div><div class="note">${P.weeks.length} weeks · race ${fmtDate(P.race.date)} · ${P.log.length} logged runs · ${P.source === 'gsheet' ? 'loaded' : 'imported'} ${new Date(P.importedAt).toLocaleDateString()}${P.edited ? ' · edited in app' : ''}</div>` : '<div class="note">No plan yet. Link a Google Sheet above, or import an .xlsx file.</div>'}
+    <div class="note" style="margin-top:8px">To change a week, open the <b>Plan</b> tab, tap a week, then tap <b>Edit week</b>.</div>
+    ${gsLinked() ? '' : `<button class="btn ${P ? 'secondary' : ''}" data-act="import">${P ? 'Re-import spreadsheet' : 'Import spreadsheet (.xlsx)'}</button>`}
     ${sheetCutoff() ? `<div class="note" style="margin-top:8px"><b>Runs through ${fmtDate(sheetCutoff())}</b> come from the spreadsheet. After that, Strava adds your runs plus cross-training (F45, strength, HIIT). Walks and other activities are ignored.</div>` : ''}
-    <div class="note" style="margin-top:8px">Re-import any time you edit the plan in Excel. If you log more runs there, the handoff date moves forward with it.</div></div>
+    <div class="note" style="margin-top:8px">If you log more runs in the sheet, the handoff date moves forward with it.</div></div>
 
   <h2>Strava</h2><div class="card">
     ${stravaConnected() ? `<div class="ok">✓ Connected${st.athlete?.name ? ' as ' + esc(st.athlete.name) : ''}</div><div class="note">${S.acts.length} activities · last sync ${S.lastSync ? new Date(S.lastSync).toLocaleString() : 'never'}</div>
@@ -630,7 +769,10 @@ document.querySelector('.tabbar').addEventListener('click', e => {
   const b = e.target.closest('button[data-tab]'); if (!b) return;
   S.tab = b.dataset.tab; render(); window.scrollTo(0, 0);
 });
-document.getElementById('sync-btn').addEventListener('click', () => sync(true));
+document.getElementById('sync-btn').addEventListener('click', async () => {
+  if (gsLinked()) await loadSheet(!stravaConnected());
+  if (stravaConnected() || !gsLinked()) sync(true);
+});
 document.getElementById('view').addEventListener('click', async e => {
   const wk = e.target.closest('.week'); if (wk) { document.getElementById('wd-' + wk.dataset.week).classList.toggle('open'); return; }
   const f = e.target.closest('[data-filter]'); if (f) { S.runFilter = f.dataset.filter; render(); return; }
@@ -638,6 +780,12 @@ document.getElementById('view').addEventListener('click', async e => {
   const act = a.dataset.act;
   const readKeys = () => { const id = document.getElementById('cid'), sec = document.getElementById('csec'); if (id) { S.strava.clientId = id.value.trim(); S.strava.clientSecret = sec.value.trim(); save('mt.strava', S.strava); } };
   if (act === 'import') pickFile();
+  else if (act === 'goto-settings') { S.tab = 'settings'; render(); }
+  else if (act === 'edit-week') editWeek(+a.dataset.i);
+  else if (act === 'edit-goals') editGoals();
+  else if (act === 'gs-link') { a.disabled = true; a.textContent = 'Linking…'; await linkSheet(document.getElementById('gslink').value); a.disabled = false; a.textContent = 'Link Google Sheet'; }
+  else if (act === 'gs-refresh') loadSheet(true);
+  else if (act === 'gs-unlink') { if (confirm('Unlink the Google Sheet? The app keeps the last copy of your plan, and edits will stay on this device.')) { S.gsheet = null; localStorage.removeItem('mt.gsheet'); if (S.plan) S.plan.source = 'local'; save('mt.plan', S.plan); render(); } }
   else if (act === 'connect') { readKeys(); stravaAuthorize(); }
   else if (act === 'code') { readKeys(); const c = document.getElementById('code').value.trim(); if (!c) return; try { await exchangeCode(c); } catch (err) { toast(err.message, 5000); } }
   else if (act === 'sync') sync(true);
@@ -669,6 +817,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => S.
     }
   }
   render();
+  if (gsLinked()) await loadSheet(false);
   if (stravaConnected() && (!S.lastSync || Date.now() - S.lastSync > 30 * 60e3)) sync(false);
 })();
 

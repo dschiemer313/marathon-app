@@ -522,7 +522,7 @@ function fundCard() {
 }
 function viewFund() {
   const f = S.fund, d = f?.data;
-  if (!d) return `<div class="card empty"><p><b>Fundraising tracker</b></p><p class="note">Add your GivenGain page in Settings → Fundraising.</p><button class="btn" data-act="goto-settings">Open Settings</button></div>`;
+  if (!d) return `${fundSeg('fund')}<div class="card empty"><p><b>Fundraising tracker</b></p><p class="note">Add your GivenGain page in Settings → Fundraising.</p><button class="btn" data-act="goto-settings">Open Settings</button></div>`;
   const named = d.donations.filter(x => x.donor !== 'Anonymous');
   const toThank = named.filter(x => !S.thanks[x.id]).length;
   const avg = d.donations.length ? d.total / d.donations.length : 0;
@@ -535,7 +535,7 @@ function viewFund() {
         <div class="meta">${fmtDate(x.date.slice(0, 10))}</div>${x.message ? `<div class="notes">“${esc(x.message)}”</div>` : ''}</div>
       <div class="mi">${money(x.amount)}</div></div>`;
   }).join('');
-  return `<button class="chip-btn" data-act="goto-today" style="margin:4px 0 10px">‹ Today</button>
+  return `${fundSeg('fund')}
   <div class="card"><div class="hero-num">${money(d.total)}</div><div class="hero-sub" style="margin-bottom:12px">raised of ${money(d.target)} · ${esc(d.title)}</div>${fundBar(d)}</div>
   <div class="stats">
     <div class="stat"><div class="k">Donations</div><div class="v">${d.donations.length}</div><div class="s">avg ${money(avg)}</div></div>
@@ -1179,9 +1179,10 @@ function render() {
   const view = document.getElementById('view');
   document.getElementById('hdr-title').textContent = TITLES[S.tab];
   document.getElementById('hdr-eyebrow').textContent = S.plan ? `${S.plan.race.name} · ${fmtHM(S.plan.race.goalSec)} goal` : 'Marathon Trainer';
-  document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === S.tab));
+  document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === (S.tab === 'miles' ? 'fund' : S.tab)));
   const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund, race: viewRace, journey: viewJourney, routes: viewRoutes, bloom: viewBloom, miles: viewMiles }[S.tab];
   if (S.map) { S.map.remove(); S.map = null; }
+  if (S.tab !== 'miles') { S.arrange = false; S.arrangePick = null; }
   view.innerHTML = fn();
   if (S.tab === 'plan') view.querySelector('.week.current')?.scrollIntoView({ block: 'center' });
   S.charts.forEach(c => c.destroy()); S.charts = [];
@@ -1195,9 +1196,11 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 document.getElementById('log-btn').addEventListener('click', () => editWorkout());
 document.getElementById('view').addEventListener('click', async e => {
   const hd = e.target.closest('[data-day]'); if (hd) { showHeatDay(hd.dataset.day); return; }
-  const ds = e.target.closest('[data-dslot]'); if (ds) { editRaceMile(ds.dataset.dslot); return; }
+  const ds = e.target.closest('[data-dslot]'); if (ds) { if (S.arrange) arrangeTap(ds.dataset.dslot); else editRaceMile(ds.dataset.dslot); return; }
   const dt = e.target.closest('[data-dtrain]'); if (dt) { editTrainRun(dt.dataset.dtrain); return; }
   const dk = e.target.closest('[data-dtold]'); if (dk) { const [kind, key] = dk.dataset.dtold.split(':'), r = kind === 'race' ? S.ded.race[key] : S.ded.train[key]; if (r) { r.told = !r.told; save('mt.ded', S.ded); render(); } return; }
+  const dd = e.target.closest('[data-ddel]'); if (dd) { const [kind, key] = dd.dataset.ddel.split(':'); removeDed(kind, key); return; }
+  const swOpen = document.querySelector('.dm-row.swiped'); if (swOpen) { swOpen.classList.remove('swiped'); swOpen.style.transform = ''; if (swOpen.contains(e.target)) return; }
   const dsn = e.target.closest('[data-dsend]'); if (dsn) { const [kind, key] = dsn.dataset.dsend.split(':'); shareChoices(kind, key); return; }
   const pe = e.target.closest('[data-bloom]'); if (pe) { showBloomRun(pe.dataset.bloom); return; }
   const sr = e.target.closest('[data-sid]'); if (sr) { openRun(sr.dataset.sid); return; }
@@ -1216,7 +1219,10 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'goto-fund') { S.tab = 'fund'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-race') { S.tab = 'race'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-today') { S.tab = 'today'; render(); window.scrollTo(0, 0); }
-  else if (act === 'ded-fill') autoFill(a.dataset.mode);
+  else if (act === 'ded-pick') pickDonors();
+  else if (act === 'ded-arrange') { S.arrange = !S.arrange; S.arrangePick = null; render(); }
+  else if (act === 'ded-shuffle') { if (confirm('Shuffle everyone into random miles? Open miles stay open.')) shuffleAssigned(); }
+  else if (act === 'ded-sort') sortAssigned();
   else if (act === 'ded-clear') { if (confirm('Clear every race-mile dedication?')) { S.ded.race = {}; save('mt.ded', S.ded); render(); } }
   else if (act === 'ded-board') { a.disabled = true; try { await shareBoard(); } catch (err) { console.error(err); toast('Could not make the image'); } a.disabled = false; }
   else if (act === 'ded-fullnames') { S.ded.fullNames = a.checked; save('mt.ded', S.ded); render(); }
@@ -1242,6 +1248,38 @@ document.getElementById('view').addEventListener('click', async e => {
   else if (act === 'export') exportBackup();
   else if (act === 'reset') { if (confirm('Erase your plan, all workouts and Strava keys from this device? Back up first if you might want them.')) { ['mt.plan', 'mt.workouts', 'mt.strava', 'mt.acts', 'mt.lastSync', 'mt.gsheet', 'mt.fund', 'mt.thanks', 'mt.det', 'mt.ded'].forEach(k => localStorage.removeItem(k)); location.reload(); } }
 });
+// Swipe a dedicated mile left to reveal Remove (like Mail).
+(() => {
+  let row = null, x0 = 0, y0 = 0, dx = 0, mode = null;
+  const view = document.getElementById('view');
+  view.addEventListener('touchstart', e => {
+    const r = e.target.closest('.dm-row.sw'); if (!r) return;
+    document.querySelectorAll('.dm-row.swiped').forEach(o => { if (o !== r) { o.classList.remove('swiped'); o.style.transform = ''; } });
+    row = r; x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; mode = null; row.style.transition = 'none';
+  }, { passive: true });
+  view.addEventListener('touchmove', e => {
+    if (!row) return;
+    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
+    if (!mode) { if (Math.abs(mx) < 8 && Math.abs(my) < 8) return; mode = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'; }
+    if (mode !== 'x') return;
+    e.preventDefault();
+    const base = row.classList.contains('swiped') ? -92 : 0;
+    dx = Math.max(-140, Math.min(0, base + mx));
+    row.style.transform = `translateX(${dx}px)`;
+  }, { passive: false });
+  view.addEventListener('touchend', () => {
+    if (!row) return;
+    row.style.transition = '';
+    if (mode === 'x') {
+      const open = dx < -46;
+      row.classList.toggle('swiped', open); row.style.transform = open ? 'translateX(-92px)' : '';
+      const r = row; r.dataset.justSwiped = '1'; setTimeout(() => delete r.dataset.justSwiped, 350);
+    }
+    row = null; mode = null;
+  });
+  // a swipe shouldn't also count as a tap on the row
+  view.addEventListener('click', e => { const r = e.target.closest('.dm-row'); if (r && r.dataset.justSwiped) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+})();
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => ['charts', 'routes', 'bloom'].includes(S.tab) && render());
 
 /* ---------- boot ---------- */

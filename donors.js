@@ -86,16 +86,113 @@ async function sendDed(kind, key) {
 }
 
 /* ---------- auto-fill ---------- */
-function autoFill(mode) {
-  const used = new Set(RACE_SLOTS.map(k => raceDed()[k]?.name?.trim().toLowerCase()).filter(Boolean));
-  let pool = donorList().filter(d => !used.has(d.name.toLowerCase()));
+const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+// Which open miles get filled: keep `keep` of them open, choosing the iconic ones, the quiet ones, or random.
+function fillPlan(keep, keepWhich) {
+  const open = RACE_SLOTS.filter(k => !raceDed()[k]?.name);
+  const byFame = MILE_PRIORITY.filter(k => open.includes(k));
+  const kept = keepWhich === 'iconic' ? byFame.slice(0, keep) : keepWhich === 'quiet' ? byFame.slice(-keep || byFame.length) : shuffle([...open]).slice(0, keep);
+  const keepSet = new Set(keep ? kept : []);
+  return { fill: byFame.filter(k => !keepSet.has(k)), kept: keep ? kept : [] };
+}
+function autoFill({ names, mode, keep, keepWhich }) {
+  let pool = donorList().filter(d => names.includes(d.name));
   if (mode === 'order') pool.sort((a, b) => (a.first < b.first ? -1 : 1));
-  if (mode === 'random') for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-  const slots = (mode === 'size' ? MILE_PRIORITY : RACE_SLOTS).filter(k => !raceDed()[k]?.name);
+  if (mode === 'random') shuffle(pool);
+  const { fill } = fillPlan(keep, keepWhich);
+  // biggest gifts get the most famous of the miles being filled; otherwise fill in mile order
+  const slots = mode === 'size' ? fill : RACE_SLOTS.filter(k => fill.includes(k));
   let n = 0;
   slots.forEach(k => { const d = pool.shift(); if (d) { raceDed()[k] = { name: d.name, did: d.ids[0], told: false }; n++; } });
-  dedSave(); render();
-  toast(n ? `Dedicated ${n} mile${n > 1 ? 's' : ''}` : pool.length ? 'Every mile already has someone' : 'Every named donor already has a mile');
+  S.ded.keepOpen = keep; S.ded.keepWhich = keepWhich; S.ded.fillMode = mode;
+  dedSave();
+  return n ? `Dedicated ${n} mile${n > 1 ? 's' : ''} · ${openMiles()} left open` : 'Nothing to fill';
+}
+function pickDonors() {
+  const dl = donorList(), open = openMiles();
+  const has = d => milesFor(d.name).length > 0;
+  const free = dl.filter(d => !has(d)), taken = dl.filter(has);
+  const keep0 = Math.min(open, S.ded.keepOpen ?? Math.min(6, open));
+  const row = (d, on) => `<label class="pk-row"><input type="checkbox" name="d" value="${esc(d.name)}"${on ? ' checked' : ''}><span class="pk-n">${esc(d.name)}</span><span class="pk-a">${money(d.amount)}</span></label>`;
+  const f = openSheet(`${sheetHead('Fill open miles', 'Assign')}
+    <div class="pk-sum" id="pk-sum"></div>
+    <label class="f">Miles to leave open for new donors</label>
+    <div class="stepper"><button type="button" data-step="-1" aria-label="Fewer">−</button><output id="pk-keep">${keep0}</output><button type="button" data-step="1" aria-label="More">+</button><span class="note">of ${open} open</span></div>
+    <input type="hidden" name="keep" value="${keep0}">
+    <label class="f" for="pk-which">Which miles stay open</label>
+    <select id="pk-which" name="which">
+      <option value="iconic"${(S.ded.keepWhich || 'iconic') === 'iconic' ? ' selected' : ''}>The famous ones (Heartbreak, Wellesley, the finish…)</option>
+      <option value="quiet"${S.ded.keepWhich === 'quiet' ? ' selected' : ''}>The quieter ones</option>
+      <option value="random"${S.ded.keepWhich === 'random' ? ' selected' : ''}>Random</option></select>
+    <label class="f" for="pk-mode">Who gets which mile</label>
+    <select id="pk-mode" name="mode">
+      <option value="size"${(S.ded.fillMode || 'size') === 'size' ? ' selected' : ''}>Biggest gifts → biggest miles</option>
+      <option value="order"${S.ded.fillMode === 'order' ? ' selected' : ''}>In the order they gave</option>
+      <option value="random"${S.ded.fillMode === 'random' ? ' selected' : ''}>Random draw</option></select>
+    <div class="pk-h"><label class="f" style="margin:0">Donors <span class="muted" id="pk-cnt"></span></label>
+      <span><button type="button" class="link" data-pk="all">All</button> · <button type="button" class="link" data-pk="none">None</button></span></div>
+    <div class="pk-list">${free.map((d, i) => row(d, i < Math.max(0, open - keep0))).join('') || '<div class="note" style="padding:10px">Every named donor already has a mile.</div>'}</div>
+    ${taken.length ? `<details class="pk-taken"><summary class="note">${taken.length} already have a mile</summary>${taken.map(d => `<div class="pk-row off"><span class="pk-n">${esc(d.name)}</span><span class="pk-a">mile ${milesFor(d.name).join(', ')}</span></div>`).join('')}</details>` : ''}`,
+    fd => {
+      const names = fd.getAll('d').map(String);
+      return autoFill({ names, mode: fd.get('mode'), keep: +fd.get('keep'), keepWhich: fd.get('which') });
+    });
+  const upd = () => {
+    const keep = +f.elements.keep.value, sel = f.querySelectorAll('input[name=d]:checked').length;
+    const { fill, kept } = fillPlan(keep, f.elements.which.value);
+    const used = Math.min(sel, fill.length);
+    document.getElementById('pk-keep').textContent = keep;
+    document.getElementById('pk-cnt').textContent = `· ${sel} selected`;
+    const left = open - used;
+    document.getElementById('pk-sum').innerHTML = `<b>${used}</b> donor${used === 1 ? '' : 's'} get a mile · <b>${left}</b> mile${left === 1 ? '' : 's'} stay open` +
+      (sel > fill.length ? `<div class="note">${sel - fill.length} selected donor${sel - fill.length > 1 ? 's' : ''} won't fit. Leave fewer open or give them a training long run.</div>` : '') +
+      (kept.length && f.elements.which.value !== 'random' ? `<div class="note">Open: mile ${RACE_SLOTS.filter(k => kept.includes(k) || (!fill.slice(0, used).includes(k) && !raceDed()[k]?.name)).join(', ')}</div>` : '');
+  };
+  f.addEventListener('click', e => {
+    const st = e.target.closest('[data-step]');
+    if (st) { f.elements.keep.value = Math.max(0, Math.min(open, +f.elements.keep.value + +st.dataset.step)); upd(); }
+    const pk = e.target.closest('[data-pk]');
+    if (pk) { f.querySelectorAll('input[name=d]').forEach(c => { c.checked = pk.dataset.pk === 'all'; }); upd(); }
+  });
+  f.addEventListener('change', upd);
+  upd();
+}
+/* ---------- rearranging ---------- */
+// Rearrange mode: tap one mile, then another, and they swap (or the person moves to an open mile).
+function arrangeTap(k) {
+  const R = raceDed();
+  if (S.arrangePick == null) { if (!R[k]?.name) { toast('Tap a mile that has someone first'); return; } S.arrangePick = k; render(); return; }
+  const a = S.arrangePick; S.arrangePick = null;
+  if (a !== k) {
+    const A = R[a], B = R[k];
+    if (B) R[a] = B; else delete R[a];
+    R[k] = A; dedSave();
+    toast(B ? `Swapped miles ${a} and ${k}` : `${A.name} moved to mile ${k}`);
+  }
+  render();
+}
+// Shuffle everyone who already has a mile into a random order (open miles stay open).
+function shuffleAssigned() {
+  const R = raceDed(), slots = RACE_SLOTS.filter(k => R[k]?.name);
+  if (slots.length < 2) { toast('Assign a few miles first'); return; }
+  const recs = shuffle(slots.map(k => R[k]));
+  slots.forEach((k, i) => { R[k] = recs[i]; });
+  dedSave(); render(); toast(`Shuffled ${slots.length} people`);
+}
+// Re-sort the people already assigned so the biggest gifts sit on the most famous of those miles.
+function sortAssigned() {
+  const R = raceDed(), slots = MILE_PRIORITY.filter(k => R[k]?.name);
+  const amt = n => donorList().find(d => d.name.toLowerCase() === n.toLowerCase())?.amount || 0;
+  const recs = slots.map(k => R[k]).sort((a, b) => amt(b.name) - amt(a.name));
+  slots.forEach((k, i) => { R[k] = recs[i]; });
+  dedSave(); render(); toast('Biggest gifts now on the biggest miles');
+}
+
+// Remove a dedication (used by swipe-to-delete).
+function removeDed(kind, key) {
+  const store = kind === 'race' ? raceDed() : S.ded.train, old = store[key]; if (!old) return;
+  delete store[key]; dedSave(); render();
+  toast(kind === 'race' ? `Mile ${key} is open again` : 'Dedication removed');
 }
 
 /* ---------- views ---------- */
@@ -110,36 +207,40 @@ function viewMiles() {
   const clockAt = k => fmtDur(segs.find(s => String(s.mile) === k)?.elapsed || 0);
   const rows = RACE_SLOTS.map(k => {
     const d = R[k], big = ['21', '26.2', '13', '17', '25', '1'].includes(k);
-    return `<div class="dm-row${d?.name ? '' : ' open'}">
+    if (S.arrange) return `<div class="dm-row arr${d?.name ? '' : ' open'}${S.arrangePick === k ? ' picked' : ''}${S.arrangePick != null && S.arrangePick !== k ? ' target' : ''}" data-dslot="${k}">
+      <div class="dm-num${big ? ' big' : ''}">${k}</div>
+      <div class="dm-main"><div class="dm-name">${d?.name ? esc(d.name) : '<span class="muted">Open</span>'}</div><div class="dm-where">${esc(MILE_NOTES[k])}</div></div>
+      <span class="arr-hint">${S.arrangePick === k ? 'Moving…' : S.arrangePick != null ? (d?.name ? 'Swap here' : 'Move here') : d?.name ? 'Tap to move' : ''}</span></div>`;
+    return `${d?.name ? `<div class="sw-wrap"><button class="sw-del" data-ddel="race:${k}">Remove</button>` : ''}<div class="dm-row${d?.name ? ' sw' : ' open'}">
       <button class="dm-num${big ? ' big' : ''}" data-dslot="${k}" aria-label="Mile ${k}">${k}</button>
       <button class="dm-main" data-dslot="${k}"><div class="dm-name">${d?.name ? esc(d.name) : '<span class="muted">Open, tap to dedicate</span>'}</div>
         <div class="dm-where">${esc(MILE_NOTES[k])} · ${clockAt(k)}${d?.note ? ' · ' + esc(d.note) : ''}</div></button>
       ${d?.name ? `<button class="dm-told${d.told ? ' on' : ''}" data-dtold="race:${k}" aria-label="${d.told ? 'Told' : 'Mark as told'}">${d.told ? '✓' : ''}</button>
-        <button class="chip-btn" data-dsend="race:${k}">Share</button>` : ''}</div>`;
+        <button class="chip-btn" data-dsend="race:${k}">Share</button>` : ''}</div>${d?.name ? '</div>' : ''}`;
   }).join('');
   const lrs = longRuns().filter(l => !l.past || S.ded.train[l.key]);
   const trows = lrs.map(l => {
     const d = S.ded.train[l.key];
-    return `<div class="dm-row${d ? '' : ' open'}">
+    return `${d ? `<div class="sw-wrap"><button class="sw-del" data-ddel="train:${l.key}">Remove</button>` : ''}<div class="dm-row${d ? ' sw' : ' open'}">
       <div class="dm-num wk">W${l.wk}</div>
       <button class="dm-main" data-dtrain="${l.key}"><div class="dm-name">${d ? esc(d.names.join(', ')) : '<span class="muted">Dedicate this run</span>'}</div>
         <div class="dm-where">${l.done ? '✓ ' + mi1(l.run.miles) : l.mi} mi long run · ${DOW[parseISO(l.date).getDay()]} ${fmtDate(l.date)}${d && d.names.length > 1 ? ` · ${Math.ceil(l.mi / d.names.length)} mi each` : ''}</div></button>
       ${d ? `<button class="dm-told${d.told ? ' on' : ''}" data-dtold="train:${l.key}" aria-label="${d.told ? 'Told' : 'Mark as told'}">${d.told ? '✓' : ''}</button>
-        <button class="chip-btn" data-dsend="train:${l.key}">Share</button>` : ''}</div>`;
+        <button class="chip-btn" data-dsend="train:${l.key}">Share</button>` : ''}</div>${d ? '</div>' : ''}`;
   }).join('');
-  return `<button class="chip-btn" data-act="goto-fund" style="margin:4px 0 10px">‹ Fundraising</button>
+  return `${fundSeg('miles')}
     <div class="card"><div class="dm-head"><div><div class="hero-num">${assigned.length}<span class="dm-of"> / 27</span></div><div class="hero-sub">Boston miles dedicated · ${told} told</div></div>
       ${ringsSVG([{ k: 'Dedicated', p: assigned.length / 27, st: null, v: assigned.length, of: 27 }, { k: 'Told', p: told / 27, st: told === 27 ? 'good' : null, v: told, of: 27 }], 84)}</div>
       ${!S.fund?.data ? '<div class="note" style="margin-top:8px">Add your GivenGain page in Settings → Fundraising to pick from your donor list. You can still type names by hand.</div>' : waiting.length ? `<div class="note" style="margin-top:8px">${waiting.length} named donor${waiting.length > 1 ? 's don\'t' : ' doesn\'t'} have a mile yet${waiting.length <= 3 ? ': ' + waiting.map(w => esc(w.name)).join(', ') : ''}.</div>` : ''}
-      ${openMiles() && dl.length ? `<div class="dm-fill"><span class="note">Fill the open miles:</span>
-        <button class="chip-btn" data-act="ded-fill" data-mode="size">Biggest gifts → biggest miles</button>
-        <button class="chip-btn" data-act="ded-fill" data-mode="order">In order they gave</button>
-        <button class="chip-btn" data-act="ded-fill" data-mode="random">Random draw</button></div>` : ''}
+      ${openMiles() && dl.length ? `<button class="btn secondary" data-act="ded-pick" style="margin-top:12px">Choose donors for the open miles…</button>` : ''}
       <button class="btn" data-act="ded-board" style="margin-top:12px">📣 Share the miles board</button>
       <div class="note" style="margin-top:6px">A story-sized image of all 27 miles: who has each one and which are still open to claim. ${openMiles() ? `Open miles are the hook: ${openMiles()} open is a good reason to post now.` : 'Tip: leave a few miles open so people have something to claim.'}</div>
       <label class="dm-opt"><input type="checkbox" data-act="ded-fullnames"${S.ded.fullNames ? ' checked' : ''}> Full last names on images <span class="muted">(off: “Lynn L.”)</span></label></div>
 
-    <h2>Race day · Boston</h2>
+    <h2 class="h2-row">Race day · Boston ${assigned.length > 1 ? `<button class="chip-btn${S.arrange ? ' on' : ''}" data-act="ded-arrange">${S.arrange ? 'Done' : '↕ Rearrange'}</button>` : ''}</h2>
+    ${S.arrange ? `<div class="arr-bar card tight"><div class="note">${S.arrangePick != null ? `Now tap where mile ${S.arrangePick} should go.` : 'Tap someone, then tap the mile to put them on. Tapping a taken mile swaps the two.'}</div>
+      <div class="arr-btns"><button class="chip-btn" data-act="ded-shuffle">🔀 Shuffle everyone</button><button class="chip-btn" data-act="ded-sort">Biggest gifts → biggest miles</button></div></div>`
+    : assigned.length ? '<p class="note" style="margin:-2px 4px 8px">Tap a mile to change it, swipe left to remove.</p>' : ''}
     <div class="card list dm-list">${rows}</div>
     ${assigned.length ? '<button class="link dm-clear" data-act="ded-clear">Clear all race miles</button>' : ''}
 
@@ -208,6 +309,7 @@ function milesCard() {
   return `<button class="card race-link" data-act="goto-miles"><span>🎽</span><div><b>Donor miles · ${n} of 27 dedicated</b>
     <div class="note">${n ? 'Each Boston mile run for someone who backed you' : 'Dedicate each Boston mile to a donor'}</div></div><span class="chev">›</span></button>`;
 }
+const fundSeg = on => `<div class="seg">${[['fund', 'Overview'], ['miles', 'Donor miles']].map(([k, l]) => `<button data-act="goto-${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 const mileBadge = name => { const m = milesFor(name); return m.length ? ` <span class="dm-badge">mile ${m.join(', ')}</span>` : ''; };
 const openMilesLine = () => { const n = openMiles(); return n ? ` ${n} of my 27 Boston miles are still open: donate and I'll run one for you.` : ''; };
 

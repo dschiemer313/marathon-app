@@ -290,6 +290,186 @@ function editWorkout(id) {
   });
 }
 
+/* ---------- weekly rings (outer: miles, middle: long run, inner: cross-training) ---------- */
+function weekRings(w) {
+  const dow = parseISO(TODAY).getDay(), share = Math.min(1, (dow + 1) / 7);
+  const ls = w.sessions.find(s => s.kind === 'long' || s.kind === 'race');
+  const longP = ls ? (ls.done ? 1 : Math.min(1, w.longest / ls.mi)) : 0;
+  const longSt = !ls ? null : ls.done ? 'good' : w.past ? 'bad' : dow === 6 ? 'warn' : 'good';
+  const xtP = w.xtTarget ? Math.min(1, w.xt / w.xtTarget) : 0;
+  const xtSt = !w.xtTarget ? null : w.xt >= w.xtTarget ? 'good' : xtP >= share - 0.35 ? 'good' : xtP >= share - 0.65 ? 'warn' : 'bad';
+  return [
+    { k: 'Miles', p: w.planMi ? w.mi / w.planMi : 0, st: weekStatus(w) || 'good', v: mi1(w.mi), of: w.planMi },
+    { k: 'Long run', p: longP, st: longSt, v: ls ? (ls.done ? mi1(ls.run.miles) : mi1(w.longest)) : '–', of: ls ? ls.mi : '' },
+    { k: 'Cross-train', p: xtP, st: xtSt, v: w.xt, of: w.xtTarget || '' },
+  ];
+}
+function ringsSVG(items, size = 112) {
+  const sw = 11, gap = 3, c0 = size / 2;
+  let s = `<svg class="rings" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(items.map(i => `${i.k} ${i.v}${i.of !== '' ? ' of ' + i.of : ''}`).join(', '))}">`;
+  items.forEach((it, i) => {
+    const r = c0 - sw / 2 - i * (sw + gap), c = 2 * Math.PI * r, p = Math.max(0, Math.min(1, it.p || 0));
+    s += `<circle cx="${c0}" cy="${c0}" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="${sw}"/>`;
+    if (p > 0) s += `<circle cx="${c0}" cy="${c0}" r="${r}" fill="none" stroke="${it.st ? ST_VAR[it.st] : 'var(--series-1)'}" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${c0} ${c0})"/>`;
+  });
+  return s + '</svg>';
+}
+function ringLegend(items) {
+  return `<div class="ring-legend">${items.map((it, i) => `<div class="rl ${it.st ? 'st-' + it.st : ''}">
+    <div class="k"><span class="ring-pos" aria-hidden="true">${['outer', 'middle', 'inner'][i]}</span>${it.k}</div>
+    <div class="v">${it.v}${it.of !== '' ? `<small> / ${it.of}</small>` : ''}${it.p >= 1 ? ' <span class="status-txt">✓</span>' : ''}</div></div>`).join('')}</div>`;
+}
+
+/* ---------- training calendar heatmap ---------- */
+function heatmapCard() {
+  const weeks = S.plan.weeks, acts = activities(), byDay = {};
+  for (const a of acts) {
+    const d = (byDay[a.date] ||= { mi: 0, xt: [], runs: 0 });
+    if (a.isRun) { d.mi += a.miles; d.runs++; } else if (a.isXT) d.xt.push(XT_LABEL[a.type] || a.type);
+  }
+  const lvl = mi => (mi <= 0 ? 0 : mi < 3 ? 1 : mi < 6 ? 2 : mi < 10 ? 3 : 4);
+  let months = '', cells = '', prevM = -1;
+  weeks.forEach((w, ci) => {
+    const m = parseISO(w.start).getMonth();
+    if (m !== prevM) { months += `<span style="grid-column:${ci + 1}">${MON[m]}</span>`; prevM = m; }
+    for (let i = 0; i < 7; i++) {
+      const day = addDays(w.start, i), d = byDay[day], mi = d ? d.mi : 0;
+      const cls = [`lv${lvl(mi)}`, d && d.xt.length ? 'xt' : '', day > TODAY ? 'future' : '', day === TODAY ? 'today' : '', day === S.plan.race.date ? 'race' : ''].filter(Boolean).join(' ');
+      cells += `<button class="hm-c ${cls}" data-day="${day}" aria-label="${fmtDate(day)}: ${mi ? mi1(mi) + ' miles' : 'no run'}${d && d.xt.length ? ', ' + d.xt.join(', ') : ''}"></button>`;
+    }
+  });
+  const past = Object.entries(byDay).filter(([k]) => k <= TODAY);
+  const runDays = past.filter(([, d]) => d.mi > 0).length, xtDays = past.filter(([, d]) => d.xt.length).length;
+  let streak = 0; for (let d = TODAY; byDay[d] && (byDay[d].mi > 0 || byDay[d].xt.length); d = addDays(d, -1)) streak++;
+  if (!streak) for (let d = addDays(TODAY, -1); byDay[d] && (byDay[d].mi > 0 || byDay[d].xt.length); d = addDays(d, -1)) streak++;
+  return `<div class="card chart-card"><h3>Training calendar</h3><div class="sub">Every day of the plan: darker = more miles</div>
+    <div class="hm-wrap" style="--cols:${weeks.length}">
+      <div class="hm-months">${months}</div>
+      <div class="hm-days"><span></span><span>M</span><span></span><span>W</span><span></span><span>F</span><span></span></div>
+      <div class="hm">${cells}</div>
+    </div>
+    <div class="hm-legend"><span>Less</span>${[0, 1, 2, 3, 4].map(i => `<i class="hm-c lv${i}"></i>`).join('')}<span>More</span><span class="sep"></span><i class="hm-c lv0 xt"></i><span>Cross-train</span><span class="sep"></span><i class="hm-c lv0 race"></i><span>Race day</span></div>
+    <div class="hm-detail" id="hm-detail">Tap a day to see what you did.</div>
+    <div class="stats" style="margin-top:10px">
+      <div class="stat"><div class="k">Run days</div><div class="v">${runDays}</div></div>
+      <div class="stat"><div class="k">Cross-train</div><div class="v">${xtDays}</div></div>
+      <div class="stat"><div class="k">Active streak</div><div class="v">${streak}<small style="font-size:12px;font-weight:500"> day${streak === 1 ? '' : 's'}</small></div></div></div></div>`;
+}
+function showHeatDay(day) {
+  const acts = activities().filter(a => a.date === day && (a.isRun || a.isXT));
+  const el = document.getElementById('hm-detail'); if (!el) return;
+  document.querySelectorAll('.hm-c.sel').forEach(c => c.classList.remove('sel'));
+  document.querySelector(`.hm-c[data-day="${day}"]`)?.classList.add('sel');
+  const d = parseISO(day);
+  el.innerHTML = `<b>${DOW[d.getDay()]} ${fmtDate(day)}</b> · ` + (acts.length
+    ? acts.map(a => a.isRun ? `${mi1(a.miles)} mi run${a.sec ? ' @ ' + fmtPace(a.sec / a.miles) + '/mi' : ''}` : esc(XT_LABEL[a.type] || a.type)).join(' + ')
+    : day > TODAY ? 'upcoming' : 'rest day');
+}
+
+/* ---------- Boston race plan: course profile + mile splits ---------- */
+// Approximate elevation (ft) at each mile marker, Hopkinton (0) to Boylston St (26.2).
+const PF = { W: 600, H: 300, top: 40, bot: 250 };   // course profile drawing box
+const BOS_ELEV = [490, 370, 330, 300, 210, 200, 190, 170, 165, 160, 165, 170, 165, 150, 140, 110, 60, 120, 150, 140, 175, 236, 170, 120, 90, 40, 15, 10];
+const BOS_MARKS = [[0, 'Start · Hopkinton'], [2.5, 'Ashland'], [6, 'Framingham'], [10, 'Natick'], [12.5, 'Wellesley “scream tunnel”'], [13.1, 'Halfway'],
+  [16, 'Newton Lower Falls'], [17.6, 'Firehouse turn · Newton hills begin'], [20.5, 'Heartbreak Hill'], [21.5, 'Boston College'], [22.5, 'Cleveland Circle'],
+  [24.7, 'Citgo sign: 1 mile to go'], [25.7, 'Right on Hereford'], [25.9, 'Left on Boylston'], [26.2, 'Finish']];
+const BOS_SECTIONS = [
+  [0, 4, 'Hopkinton → Ashland', 'Fast downhill start in a crowd. Hold back: running a little slower here pays off at mile 20.'],
+  [4, 16, 'Framingham → Wellesley', 'Rolling and mostly flat. Settle into goal pace and fuel on schedule. Enjoy Wellesley at 12.5 but don\'t surge.'],
+  [16, 21, 'The Newton hills', 'Four climbs ending with Heartbreak at 20.5. Run by effort, not pace. Losing 15–25 s/mi on the climbs is part of the plan.'],
+  [21, 26.2, 'Boston College → Boylston', 'Mostly downhill to the finish. If you have it left, this is where you race.'],
+];
+function racePlan(goalSec) {
+  const segs = [];
+  for (let i = 0; i < 27; i++) {
+    const dist = i < 26 ? 1 : 0.2, grade = (BOS_ELEV[i + 1] - BOS_ELEV[i]) / (dist * 5280) * 100;
+    const gf = grade > 0 ? 0.033 * grade : 0.018 * grade;          // uphill costs more than downhill gives back
+    const strat = i === 0 ? 0.045 : i === 1 ? 0.035 : i < 4 ? 0.02 : 0; // hold back on the early downhills
+    segs.push({ mile: i < 26 ? i + 1 : 26.2, from: i, dist, grade, w: (1 + gf + strat) * dist });
+  }
+  const unit = goalSec / segs.reduce((t, s) => t + s.w, 0);
+  let el = 0;
+  segs.forEach(s => { s.sec = s.w * unit; s.pace = s.sec / s.dist; el += s.sec; s.elapsed = el; });
+  // gels roughly every 45 minutes
+  const gels = []; for (let t = 45 * 60; t < goalSec - 15 * 60; t += 45 * 60) { const s = segs.find(x => x.elapsed >= t); if (s) gels.push(s.mile); }
+  segs.forEach(s => { s.gel = gels.includes(s.mile); });
+  return segs;
+}
+const elapsedAt = (segs, mi) => { let t = 0; for (const s of segs) { const end = s.from + s.dist; if (mi >= end) t = s.elapsed; else { t += s.pace * Math.max(0, mi - s.from); break; } } return t; };
+
+function viewRace() {
+  if (!S.plan) return emptyPlan();
+  const P = S.plan.race, segs = racePlan(P.goalSec), { W, H, top, bot } = PF;
+  const x = mi => (mi / 26.2) * W, eMax = 520, eMin = 0, y = e => bot - ((e - eMin) / (eMax - eMin)) * (bot - top);
+  const pts = BOS_ELEV.map((e, i) => [x(Math.min(i, 26.2)), y(e)]);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('');
+  const area = `${line}L${W},${bot}L0,${bot}Z`;
+  const hills = `M${x(16)},${bot}` + pts.filter((p, i) => i >= 16 && i <= 21).map(p => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('') + `L${x(21)},${bot}Z`;
+  const marks = BOS_MARKS.filter(m => [0, 13.1, 20.5, 26.2].includes(m[0]));
+  const k5 = [[3.107, '5K'], [6.214, '10K'], [9.321, '15K'], [12.427, '20K'], [13.109, 'Half'], [15.534, '25K'], [18.641, '30K'], [21.748, '35K'], [24.855, '40K'], [26.219, 'Finish']];
+  const slow = Math.max(...segs.map(s => s.pace)), fast = Math.min(...segs.map(s => s.pace));
+  const rows = segs.map(s => {
+    const mk = BOS_MARKS.filter(m => m[0] > s.from && m[0] <= s.from + s.dist).map(m => m[1]);
+    const tag = s.pace > P.goalPace + 8 ? 'up' : s.pace < P.goalPace - 8 ? 'down' : '';
+    return `<div class="split ${s.from >= 16 && s.from < 21 ? 'hill' : ''}" data-mile="${s.from}">
+      <div class="sm">${s.mile === 26.2 ? '26.2' : s.mile}</div>
+      <div class="sp"><b>${fmtPace(s.pace)}</b><span class="pbar"><i style="width:${(((s.pace - fast) / ((slow - fast) || 1)) * 70 + 30).toFixed(0)}%" class="${tag}"></i></span></div>
+      <div class="se">${fmtDur(s.elapsed)}</div>
+      <div class="sn">${s.gel ? '<span class="gel">gel</span> ' : ''}${esc(mk.join(' · '))}</div></div>`;
+  }).join('');
+  return `<div class="race-head card">
+      <div class="k">Boston plan for</div><div class="hero-num">${fmtDur(P.goalSec)}</div>
+      <div class="hero-sub">${fmtPace(P.goalPace)}/mi average · ${segs.filter(s => s.gel).length} gels · ${fmtDate(P.date)}</div>
+      <button class="chip-btn" data-act="edit-goals" style="margin-top:10px">Change goal time</button></div>
+
+    <div class="card chart-card">
+      <h3>Course profile</h3><div class="sub">Drag along the course to see your plan for each mile</div>
+      <div class="profile-detail" id="pf-detail"></div>
+      <svg class="profile" id="profile" viewBox="0 0 ${W} ${H}" role="img" aria-label="Boston Marathon elevation profile with mile markers">
+        <path d="${area}" class="pf-area"/><path d="${hills}" class="pf-hills"/><path d="${line}" class="pf-line"/>
+        ${[0, 5, 10, 15, 20, 25].map(m => `<text x="${x(m)}" y="${H - 16}" class="pf-tick" text-anchor="${m ? 'middle' : 'start'}">${m || 'mi 0'}</text>`).join('')}
+        ${marks.map(m => `<circle cx="${x(m[0])}" cy="${y(BOS_ELEV[Math.round(Math.min(m[0], 26.2))] ?? 10)}" r="6" class="pf-mark"/>`).join('')}
+        <text x="${x(18.5)}" y="${top - 10}" class="pf-label" text-anchor="middle">Newton hills</text>
+        <g id="pf-cursor" style="display:none"><line y1="${top - 4}" y2="${bot}" class="pf-cur"/><circle r="9" class="pf-dot"/></g>
+        <rect x="0" y="0" width="${W}" height="${H}" fill="transparent" id="pf-hit"/>
+      </svg>
+      <div class="pf-scale"><span>${BOS_ELEV[0]} ft start</span><span>Heartbreak top ${BOS_ELEV[21]} ft</span><span>${BOS_ELEV[27]} ft finish</span></div>
+    </div>
+
+    <h2>How to run it</h2>
+    ${BOS_SECTIONS.map(([a, b, t, d]) => `<div class="card tight sect"><div class="sect-h"><b>${t}</b><span class="muted">mi ${a}–${b}</span></div><div class="note">${d}</div>
+      <div class="note"><b>${fmtPace(segs.filter(s => s.from >= a && s.from < b).reduce((q, s) => q + s.sec, 0) / Math.max(0.1, b - a))}/mi</b> average for this stretch</div></div>`).join('')}
+
+    <h2>Checkpoints <span class="muted" style="text-transform:none;letter-spacing:0">· wristband</span></h2>
+    <div class="card tight k5">${k5.map(([d, l]) => `<div><span>${l}</span><b>${fmtDur(elapsedAt(segs, d))}</b></div>`).join('')}</div>
+
+    <h2>Mile by mile</h2>
+    <div class="card list splits"><div class="split head"><div class="sm">Mile</div><div class="sp">Pace</div><div class="se">Clock</div><div class="sn">Notes</div></div>${rows}</div>
+    <p class="note" style="text-align:center">Elevation is approximate. Paces adjust for each mile's climb or drop and add up to your goal time.</p>`;
+}
+function initRaceProfile() {
+  const svg = document.getElementById('profile'); if (!svg) return;
+  const P = S.plan.race, segs = racePlan(P.goalSec), { W, top, bot } = PF;
+  const y = e => bot - (e / 520) * (bot - top);
+  const cur = document.getElementById('pf-cursor'), det = document.getElementById('pf-detail');
+  const show = mi => {
+    mi = Math.max(0, Math.min(26.2, mi));
+    const i = Math.min(26, Math.floor(mi)), f = mi - i, e = BOS_ELEV[i] + (BOS_ELEV[i + 1] - BOS_ELEV[i]) * (i === 26 ? f / 0.2 : f);
+    const s = segs[Math.min(segs.length - 1, i)], X = (mi / 26.2) * W;
+    cur.style.display = ''; cur.querySelector('line').setAttribute('x1', X); cur.querySelector('line').setAttribute('x2', X);
+    cur.querySelector('circle').setAttribute('cx', X); cur.querySelector('circle').setAttribute('cy', y(e));
+    const near = BOS_MARKS.filter(m => m[0] >= mi - 0.01).sort((a, b) => a[0] - b[0])[0];
+    det.innerHTML = `<div><span class="muted">Mile</span> <b>${mi.toFixed(1)}</b></div><div><span class="muted">Pace</span> <b>${fmtPace(s.pace)}</b></div>
+      <div><span class="muted">Clock</span> <b>${fmtDur(elapsedAt(segs, mi))}</b></div><div class="wide">${near ? `Next: ${esc(near[1])}${near[0] - mi > 0.05 ? ` in ${(near[0] - mi).toFixed(1)} mi` : ''}` : ''}${s.gel ? ' · <span class="gel">gel this mile</span>' : ''} · ${Math.round(e)} ft</div>`;
+    document.querySelectorAll('.split.sel').forEach(r => r.classList.remove('sel'));
+    document.querySelector(`.split[data-mile="${s.from}"]`)?.classList.add('sel');
+  };
+  const at = ev => { const r = svg.getBoundingClientRect(); return ((ev.clientX - r.left) / r.width) * 26.2; };
+  svg.addEventListener('pointerdown', ev => { svg.setPointerCapture(ev.pointerId); show(at(ev)); });
+  svg.addEventListener('pointermove', ev => { if (ev.pressure > 0 || ev.pointerType === 'mouse') show(at(ev)); });
+  show(20.5);
+}
+
 /* ---------- fundraising (GivenGain, read through the Google Apps Script link) ---------- */
 S.fund = load('mt.fund', null);     // { url, id, data, at }
 S.thanks = load('mt.thanks', {});   // donation id -> true once thanked
@@ -796,6 +976,7 @@ function viewToday() {
   const done = weeks.filter(x => x.past);
   const cumDiff = done.length ? sum(done, x => x.mi) - sum(done, x => x.planMi) : 0;
   const wst = weekStatus(w);
+  const rings = weekRings(w);
   const sessions = w.sessions.map(s => `<div class="session">
       <div class="check ${s.done ? 'done' : ''}">${s.done ? '✓' : ''}</div>
       <div><div class="t">${esc(s.label)}</div><div class="d">${s.done ? `${fmtDate(s.run.date)} · ${mi1(s.run.miles)} mi @ ${fmtPace(s.run.sec / s.run.miles)}/mi` : esc(s.notes && !/^easy$/i.test(s.notes) ? s.notes : (s.kind === 'quick' ? `~${fmtPace(P.quickPace)}/mi` : `~${fmtPace(s.kind === 'race' ? P.goalPace : P.easyPace)}/mi`))}</div></div>
@@ -804,11 +985,13 @@ function viewToday() {
   const recs = recommendations(weeks, ci).map(recCard).join('');
   const recent = activities().slice(0, 4).map(runRow).join('');
   return `
-  <div class="card hero">${ring(w.mi, w.planMi, 92, wst)}
+  <div class="card"><div class="hero">${ringsSVG(rings)}
     <div><div class="hero-num">${dtr >= 0 ? dtr : 0}<span style="font-size:16px;font-weight:600;color:var(--text-2)"> days</span></div>
     <div class="hero-sub">to ${esc(P.name)} · ${fmtDate(P.date)}</div>
     <div style="margin-top:8px"><span class="pill phase">Week ${w.wk} · ${esc(w.phase)}</span> <span class="pill">${fmtDate(w.start)}–${fmtDate(addDays(w.start, 6))}</span></div>
     ${wst ? `<div class="${'st-' + wst}" style="margin-top:8px;font-size:13px"><span class="status-dot"></span><span class="status-txt">${ST_LABEL[wst]}</span> <span class="muted">this week</span></div>` : ''}</div></div>
+    ${ringLegend(rings)}</div>
+  <button class="card race-link" data-act="goto-race"><span>🏁</span><div><b>Boston race plan</b><div class="note">Course profile and mile splits for ${fmtHM(P.goalSec)}</div></div><span class="chev">›</span></button>
   <div class="stats">
     <div class="stat"><div class="k">Goal</div><div class="v">${fmtHM(P.goalSec)}</div><div class="s">${fmtPace(P.goalPace)}/mi</div></div>
     <div class="stat ${pred ? 'st-' + predStatus(pred.sec, P.goalSec) : ''}"><div class="k">Predicted</div><div class="v">${pred ? fmtHM(pred.sec) : '–'}</div><div class="s">${pred ? fmtPace(pred.sec / P.distance) + '/mi' : 'need 4+ mi run'}</div></div>
@@ -839,7 +1022,7 @@ function viewPlan() {
       <div class="mi ${st ? 'st-' + st : ''}">${w.started ? `<span ${st ? 'class="status-txt"' : ''}>${mi1(w.mi)}</span>` : '–'}<small>of ${w.planMi}</small></div></div>
       <div class="week-detail" id="wd-${w.i}">${det}</div>`;
   }).join('');
-  return rows + '</div>';
+  return `<button class="card race-link" data-act="goto-race" style="margin-top:4px"><span>🏁</span><div><b>Boston race plan</b><div class="note">Course profile and mile splits</div></div><span class="chev">›</span></button>` + rows + '</div>';
 }
 
 function viewRuns() {
@@ -907,7 +1090,7 @@ function viewCharts() {
   const hasHR = runs().some(r => r.hr);
   const card = (id, title, sub, legend) => `<div class="card chart-card"><h3>${title}</h3><div class="sub">${sub}</div>${legend ? `<div class="legend">${legend}</div>` : ''}<div class="chart-wrap"><canvas id="${id}" role="img" aria-label="${esc(title)}"></canvas></div></div>`;
   const L = (cls, color, label) => `<span><i class="${cls}" style="background:${color}"></i>${label}</span>`;
-  return card('c-weekly', 'Weekly mileage', 'Actual miles vs plan, colored by how each week went', L('', 'var(--good)', 'On track') + L('', 'var(--warning)', 'A bit behind') + L('', 'var(--critical)', 'Behind') + L('dash', 'var(--plan)', 'Plan'))
+  return heatmapCard() + card('c-weekly', 'Weekly mileage', 'Actual miles vs plan, colored by how each week went', L('', 'var(--good)', 'On track') + L('', 'var(--warning)', 'A bit behind') + L('', 'var(--critical)', 'Behind') + L('dash', 'var(--plan)', 'Plan'))
     + card('c-cum', 'Cumulative miles', 'Are you banking the miles?', L('', 'var(--series-1)', 'Actual') + L('dash', 'var(--plan)', 'Plan'))
     + card('c-pace', 'Pace per run', 'Higher is faster', L('dot', 'var(--series-1)', 'Run') + L('', 'var(--series-2)', 'Goal pace') + L('', 'var(--series-3)', 'Easy pace'))
     + card('c-long', 'Long run progression', 'Longest run each week vs the planned long run', L('', 'var(--series-1)', 'Longest actual') + L('dash', 'var(--plan)', 'Planned long'))
@@ -982,17 +1165,17 @@ function drawCharts() {
 }
 
 /* ---------- render + events ---------- */
-const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising' };
+const TITLES = { today: 'Today', plan: 'Plan', charts: 'Charts', runs: 'Runs', settings: 'Settings', fund: 'Fundraising', race: 'Race plan' };
 function render() {
   const view = document.getElementById('view');
   document.getElementById('hdr-title').textContent = TITLES[S.tab];
   document.getElementById('hdr-eyebrow').textContent = S.plan ? `${S.plan.race.name} · ${fmtHM(S.plan.race.goalSec)} goal` : 'Marathon Trainer';
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === S.tab));
-  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund }[S.tab];
+  const fn = { today: viewToday, plan: viewPlan, charts: viewCharts, runs: viewRuns, settings: viewSettings, fund: viewFund, race: viewRace }[S.tab];
   view.innerHTML = fn();
   if (S.tab === 'plan') view.querySelector('.week.current')?.scrollIntoView({ block: 'center' });
   S.charts.forEach(c => c.destroy()); S.charts = [];
-  if (S.tab === 'charts') drawCharts(); else if (S.tab === 'fund') drawFundChart();
+  if (S.tab === 'charts') drawCharts(); else if (S.tab === 'fund') drawFundChart(); else if (S.tab === 'race') initRaceProfile();
 }
 
 document.querySelector('.tabbar').addEventListener('click', e => {
@@ -1001,6 +1184,8 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 });
 document.getElementById('log-btn').addEventListener('click', () => editWorkout());
 document.getElementById('view').addEventListener('click', async e => {
+  const hd = e.target.closest('[data-day]'); if (hd) { showHeatDay(hd.dataset.day); return; }
+  const sp = e.target.closest('.split[data-mile]'); if (sp && S.tab === 'race') { document.getElementById('profile')?.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
   const th = e.target.closest('[data-thank]'); if (th) { const id = th.dataset.thank; if (S.thanks[id]) delete S.thanks[id]; else S.thanks[id] = true; save('mt.thanks', S.thanks); render(); return; }
   const row = e.target.closest('[data-wid]'); if (row) { editWorkout(row.dataset.wid); return; }
   const wk = e.target.closest('.week'); if (wk) { document.getElementById('wd-' + wk.dataset.week).classList.toggle('open'); return; }
@@ -1011,6 +1196,7 @@ document.getElementById('view').addEventListener('click', async e => {
   if (act === 'import') pickFile();
   else if (act === 'goto-settings') { S.tab = 'settings'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-fund') { S.tab = 'fund'; render(); window.scrollTo(0, 0); }
+  else if (act === 'goto-race') { S.tab = 'race'; render(); window.scrollTo(0, 0); }
   else if (act === 'goto-today') { S.tab = 'today'; render(); window.scrollTo(0, 0); }
   else if (act === 'share-fund') { e.stopPropagation(); shareFund(); }
   else if (act === 'fund-refresh') { e.preventDefault(); loadFund(true); }

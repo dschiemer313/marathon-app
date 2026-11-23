@@ -65,9 +65,10 @@ The sheet needs these labels, which it already has:
 
 | Tab | What you get |
 |---|---|
-| **Today** | Days to Boston, this week's mileage ring, planned runs and cross-training checked off automatically, goal vs predicted finish, coaching tips |
+| **Today** | Days to Boston; weekly rings (outer = miles, middle = long run, inner = cross-training, colored green/yellow/red by progress); planned runs checked off automatically; goal vs predicted finish; fundraising; coaching tips |
+| **Race plan** | Boston course elevation profile you can drag along; mile-by-mile target paces adjusted for hills; gel timing; 5K checkpoint "wristband"; advice for each section |
 | **Plan** | All weeks by phase with planned vs actual miles. Tap a week for its runs, notes, and **Edit week**. |
-| **Charts** | Weekly mileage, cumulative miles, pace per run (with goal and easy pace lines), long-run progression, cross-training vs target, predicted marathon time, Apple Watch heart rate |
+| **Charts** | Training calendar heatmap (every day, shaded by miles, with cross-training marked), weekly mileage, cumulative miles, pace per run (with goal and easy pace lines), long-run progression, cross-training vs target, predicted marathon time, Apple Watch heart rate |
 | **Runs** | Every run and cross-training session, filterable |
 | **Settings** | Google Sheet link, race goal and paces, Strava, data export |
 

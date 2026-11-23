@@ -249,7 +249,7 @@ function bloomInfo(r, weeks) {
   const quick = pace != null && pace < P.goalPace + 10;
   const w = weeks.find(x => r.date >= x.start && r.date < x.end);
   const long = r.miles >= 10 || !!(w && w.sessions.some(s => (s.kind === 'long' || s.kind === 'race') && s.run === r));
-  const race = r.date === P.date && r.miles > 20 || /(race|half|marathon|5k|10k)/i.test(r.name || '') ||
+  const race = r.date === P.date && r.miles > 20 || /\b(race|half|marathon|5k|10k)\b/i.test(r.name || '') ||
     (pace != null && pace < P.goalPace + 15 && RACE_DIST.some(([d, t]) => Math.abs(r.miles - d) <= t));
   return { pace: quick ? 'quick' : 'easy', long, race };
 }
